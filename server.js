@@ -40,6 +40,8 @@ app.get("/agents", (req, res) => {
 // chat
 app.post("/chat", async (req, res) => {
   try {
+app.post("/chat", async (req, res) => {
+  try {
     const { message } = req.body;
 
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -56,17 +58,25 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
-    const reply =
-      data.output?.[0]?.content?.[0]?.text ||
-      "No response";
+    console.log("OPENAI RESPONSE:", JSON.stringify(data, null, 2));
+
+    let reply = "No response";
+
+    // SAFE parsing (FIXED)
+    if (data.output && data.output.length > 0) {
+      const content = data.output[0].content;
+      if (content && content.length > 0) {
+        reply = content[0].text || reply;
+      }
+    }
 
     res.json({ reply });
 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.log("ERROR:", error);
+    res.status(500).json({ error: error.message });
   }
 });
-
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
