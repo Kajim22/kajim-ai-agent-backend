@@ -2,39 +2,77 @@ const express = require("express");
 const cors = require("cors");
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 const API_KEY = process.env.OPENAI_API_KEY;
 
-// In-memory agents
-let agents = [];
+// Home route
+app.get("/", (req, res) => {
+  res.send("AI Agent Backend Running 🚀");
+});
 
-// Create agent
+// Dummy in-memory storage
+let agents = [];
+let id = 1;
+
+// Create Agent
 app.post("/create-agent", (req, res) => {
   const { name, system, instructions } = req.body;
 
-  const newAgent = {
-    id: Date.now(),
+  const agent = {
+    id: id++,
     name,
     system,
     instructions
   };
 
-  agents.push(newAgent);
-  res.json({ success: true });
+  agents.push(agent);
+
+  res.json(agent);
 });
 
-// Get agents
+// Get Agents
 app.get("/agents", (req, res) => {
   res.json(agents);
 });
 
-// Chat
+// Chat API
 app.post("/chat", async (req, res) => {
   try {
-    const { agentId, message } = req.body;
+    const { message } = req.body;
 
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        input: message
+      })
+    });
+
+    const data = await response.json();
+
+    const reply =
+      data.output?.[0]?.content?.[0]?.text ||
+      "No response from AI";
+
+    res.json({ reply });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
+});
     const agent = agents.find(a => a.id == agentId);
 
     if (!agent) {
