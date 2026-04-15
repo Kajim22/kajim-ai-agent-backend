@@ -1,40 +1,15 @@
 const express = require("express");
-const cors = require("cors");
-
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+app.get("/", (req, res) => {
+  res.send("Server OK");
+});
 
 const PORT = process.env.PORT || 3000;
 
-const API_KEY = process.env.OPENAI_API_KEY;
-
-// memory
-let agents = [];
-let id = 1;
-
-app.get("/", (req, res) => {
-  res.send("AI Agent Backend Running 🚀");
+app.listen(PORT, () => {
+  console.log("Running");
 });
-
-app.post("/create-agent", (req, res) => {
-  const { name, system, instructions } = req.body;
-
-  if (!name || !system || !instructions) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
-
-  const agent = { id: id++, name, system, instructions };
-  agents.push(agent);
-
-  res.json(agent);
-});
-
-app.get("/agents", (req, res) => {
-  res.json(agents);
-});
-
 app.post("/chat", async (req, res) => {
   try {
     const { message } = req.body;
