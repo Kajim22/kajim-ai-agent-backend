@@ -9,10 +9,9 @@ app.use(express.json());
 const API_KEY = process.env.OPENAI_API_KEY;
 
 // Home route
-app.get("/", (req, res) => {
-  res.send("AI Agent Backend Running 🚀");
+app.get("/agents", (req, res) => {
+  res.json(agents);
 });
-
 // Dummy in-memory storage
 let agents = [];
 let id = 1;
