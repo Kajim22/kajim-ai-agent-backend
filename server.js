@@ -8,19 +8,16 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// OpenAI Key
 const API_KEY = process.env.OPENAI_API_KEY;
 
-// Simple memory storage
+// memory
 let agents = [];
 let id = 1;
 
-// Health check
 app.get("/", (req, res) => {
   res.send("AI Agent Backend Running 🚀");
 });
 
-// Create Agent
 app.post("/create-agent", (req, res) => {
   const { name, system, instructions } = req.body;
 
@@ -28,13 +25,48 @@ app.post("/create-agent", (req, res) => {
     return res.status(400).json({ error: "Missing fields" });
   }
 
-  const agent = {
-    id: id++,
-    name,
-    system,
-    instructions
-  };
+  const agent = { id: id++, name, system, instructions };
+  agents.push(agent);
 
+  res.json(agent);
+});
+
+app.get("/agents", (req, res) => {
+  res.json(agents);
+});
+
+app.post("/chat", async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        input: message
+      })
+    });
+
+    const data = await response.json();
+
+    const reply =
+      data.output?.[0]?.content?.[0]?.text ||
+      "No response";
+
+    res.json({ reply });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log("Server running on", PORT);
+});
   agents.push(agent);
 
   res.json(agent);
