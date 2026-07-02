@@ -7,68 +7,46 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const API_KEY = process.env.OPENAI_API_KEY;
+// Render-এ এনভায়রনমেন্ট ভেরিয়েবল হিসেবে GEMINI_API_KEY সেট করুন
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// memory
-let agents = [];
-let id = 1;
-
-// home
 app.get("/", (req, res) => {
   res.send("AI Agent Backend Running 🚀");
 });
 
-// create agent
-app.post("/create-agent", (req, res) => {
-  const { name, system, instructions } = req.body;
-
-  if (!name || !system || !instructions) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
-
-  const agent = { id: id++, name, system, instructions };
-  agents.push(agent);
-
-  res.json(agent);
-});
-
-// list agents
-app.get("/agents", (req, res) => {
-  res.json(agents);
-});
-
-// chat
+// chat route (Gemini updated)
 app.post("/chat", async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, systemPrompt, history } = req.body;
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    // Gemini API URL
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+    // Gemini-এর ফরম্যাট অনুযায়ী রিকোয়েস্ট তৈরি করা
+    const payload = {
+      system_instruction: { parts: [{ text: systemPrompt || "তুমি একজন সহকারী।" }] },
+      contents: history || [{ role: "user", parts: [{ text: message }] }]
+    };
+
+    const response = await fetch(geminiUrl, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        input: message
-      })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
 
-    let reply = "No response";
-
-    if (data.output?.[0]?.content?.[0]?.text) {
-      reply = data.output[0].content[0].text;
-    }
+    // রেসপন্স থেকে টেক্সট বের করা
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "উত্তরের কোনো অংশ পাওয়া যায়নি।";
 
     res.json({ reply });
 
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("Backend Error:", err);
+    res.status(500).json({ error: "Server error during API call" });
   }
 });
+
 app.listen(PORT, () => {
   console.log("AI Agent Backend running on port", PORT);
 });
