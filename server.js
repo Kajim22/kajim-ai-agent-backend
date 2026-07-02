@@ -1,3 +1,13 @@
+const express = require('express');
+const cors = require('cors');
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// API Endpoint
 app.post("/chat", async (req, res) => {
   const { message, systemPrompt, history } = req.body;
   const API_KEY = process.env.GEMINI_API_KEY;
@@ -18,9 +28,6 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
     
-    // কনসোল লগ দিয়ে দেখুন API থেকে কী রেসপন্স আসছে
-    console.log("Gemini API Response:", JSON.stringify(data));
-
     // রেসপন্স ফিল্টার করা
     const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || 
                   data?.error?.message || 
@@ -30,4 +37,9 @@ app.post("/chat", async (req, res) => {
   } catch (err) {
     res.json({ reply: "সার্ভার এরর: " + err.message });
   }
+});
+
+// Start Server
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
