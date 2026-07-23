@@ -21,18 +21,83 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS telegram_bots (
         bot_token TEXT PRIMARY KEY,
         system_prompt TEXT NOT NULL,
+        agent_id TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_knowledge (
+        id SERIAL PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    // পুরনো টেবিলে agent_id কলাম না থাকলে যোগ করা (safe upgrade)
+    await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
     console.log('✓ Database ready');
   } catch (err) {
     console.error('Database init error:', err.message);
   }
 }
 
-// API Endpoint
+// ==== Knowledge Base হেল্পার ====
+async function getKnowledgeText(agentId) {
+  if (!agentId) return '';
+  try {
+    const result = await pool.query(
+      "SELECT content FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at ASC",
+      [agentId]
+    );
+    if (result.rows.length === 0) return '';
+    const points = result.rows.map(r => `- ${r.content}`).join('\n');
+    return `\n\nনিচের তথ্যগুলো ব্যবহার করে উত্তর দাও (Knowledge Base):\n${points}`;
+  } catch (err) {
+    console.error('getKnowledgeText error:', err.message);
+    return '';
+  }
+}
+
+// Knowledge যোগ করা
+app.post("/knowledge/add", async (req, res) => {
+  const { agentId, content } = req.body;
+  if (!agentId || !content) return res.json({ success: false, error: "agentId ও content প্রয়োজন" });
+  try {
+    await pool.query("INSERT INTO agent_knowledge (agent_id, content) VALUES ($1, $2)", [agentId, content]);
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Knowledge মুছা
+app.post("/knowledge/delete", async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.json({ success: false, error: "id প্রয়োজন" });
+  try {
+    await pool.query("DELETE FROM agent_knowledge WHERE id = $1", [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// একটা এজেন্টের সব knowledge লিস্ট দেখা
+app.get("/knowledge/list/:agentId", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, content, created_at FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at DESC",
+      [req.params.agentId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// API Endpoint (টেস্ট সেন্টার থেকে কল হয়)
 app.post("/chat", async (req, res) => {
-  const { message, systemPrompt, history } = req.body;
+  const { message, systemPrompt, history, agentId } = req.body;
   const API_KEY = process.env.GEMINI_API_KEY;
 
   if (!API_KEY) {
@@ -40,11 +105,14 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
+    const knowledgeText = await getKnowledgeText(agentId);
+    const fullPrompt = (systemPrompt || "তুমি একজন সহকারী।") + knowledgeText;
+
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt || "তুমি একজন সহকারী।" }] },
+        system_instruction: { parts: [{ text: fullPrompt }] },
         contents: history
       })
     });
@@ -63,16 +131,16 @@ app.post("/chat", async (req, res) => {
 
 // ==== Telegram Bot Integration ====
 
-// প্রতিটা bot token -> { systemPrompt, histories } (chat history মেমোরিতেই থাকবে, শুধু token+prompt DB-তে সেভ হবে)
+// প্রতিটা bot token -> { systemPrompt, agentId, histories }
 const telegramBots = {};
 
 // টেলিগ্রাম বট কানেক্ট করা
 app.post("/telegram/connect", async (req, res) => {
-  const { botToken, systemPrompt } = req.body;
+  const { botToken, systemPrompt, agentId } = req.body;
   if (!botToken) return res.json({ success: false, error: "Bot token প্রয়োজন" });
 
   const prompt = systemPrompt || "তুমি একজন সহকারী।";
-  telegramBots[botToken] = { systemPrompt: prompt, histories: {} };
+  telegramBots[botToken] = { systemPrompt: prompt, agentId: agentId || null, histories: {} };
 
   try {
     const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${botToken}`;
@@ -82,9 +150,9 @@ app.post("/telegram/connect", async (req, res) => {
 
     // ডাটাবেসে সেভ করা (আগে থাকলে আপডেট করা)
     await pool.query(
-      `INSERT INTO telegram_bots (bot_token, system_prompt) VALUES ($1, $2)
-       ON CONFLICT (bot_token) DO UPDATE SET system_prompt = $2`,
-      [botToken, prompt]
+      `INSERT INTO telegram_bots (bot_token, system_prompt, agent_id) VALUES ($1, $2, $3)
+       ON CONFLICT (bot_token) DO UPDATE SET system_prompt = $2, agent_id = $3`,
+      [botToken, prompt, agentId || null]
     );
 
     res.json({ success: true });
@@ -110,11 +178,14 @@ app.post("/telegram/webhook/:token", async (req, res) => {
 
   const API_KEY = process.env.GEMINI_API_KEY;
   try {
+    const knowledgeText = await getKnowledgeText(bot.agentId);
+    const fullPrompt = bot.systemPrompt + knowledgeText;
+
     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: bot.systemPrompt }] },
+        system_instruction: { parts: [{ text: fullPrompt }] },
         contents: bot.histories[chatId]
       })
     });
@@ -137,7 +208,7 @@ app.post("/telegram/webhook/:token", async (req, res) => {
 // সেভ করা সব bot দেখার এন্ডপয়েন্ট (ডাটাবেসে কী আছে যাচাই করতে)
 app.get("/telegram/list", async (req, res) => {
   try {
-    const result = await pool.query("SELECT bot_token, system_prompt, created_at FROM telegram_bots ORDER BY created_at DESC");
+    const result = await pool.query("SELECT bot_token, system_prompt, agent_id, created_at FROM telegram_bots ORDER BY created_at DESC");
     res.json(result.rows);
   } catch (err) {
     res.json({ error: err.message });
@@ -216,9 +287,9 @@ app.post("/webhook/facebook", async (req, res) => {
 // সার্ভার চালু হওয়ার সময় ডাটাবেস থেকে পুরনো bot গুলো লোড করে auto-reconnect করা
 async function restoreBots() {
   try {
-    const result = await pool.query("SELECT bot_token, system_prompt FROM telegram_bots");
+    const result = await pool.query("SELECT bot_token, system_prompt, agent_id FROM telegram_bots");
     for (const row of result.rows) {
-      telegramBots[row.bot_token] = { systemPrompt: row.system_prompt, histories: {} };
+      telegramBots[row.bot_token] = { systemPrompt: row.system_prompt, agentId: row.agent_id, histories: {} };
 
       const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${row.bot_token}`;
       await fetch(`https://api.telegram.org/bot${row.bot_token}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
