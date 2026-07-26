@@ -111,10 +111,14 @@ app.get("/knowledge/list/:agentId", async (req, res) => {
 // একটা কথোপকথন থেকে অর্ডার তথ্য বের করার চেষ্টা করে (Gemini দিয়ে)
 async function extractOrderInfo(historyArr) {
   const API_KEY = process.env.GEMINI_API_KEY;
-  const extractPrompt = `নিচের কথোপকথনটা পড়ে বলো গ্রাহক অর্ডার করার জন্য প্রয়োজনীয় তথ্য (নাম, ঠিকানা, ফোন নাম্বার) দিয়েছে কিনা। যদি দিয়ে থাকে, শুধুমাত্র এই JSON ফরম্যাটে উত্তর দাও, অন্য কিছু লিখবে না:
-{"complete": true, "customer_name": "...", "customer_address": "...", "customer_phone": "...", "order_details": "সংক্ষেপে কী অর্ডার করেছে"}
+  const extractPrompt = `তুমি একটা তথ্য বের করার টুল। নিচের কথোপকথন থেকে গ্রাহকের অর্ডার তথ্য (নাম, ঠিকানা, ফোন) বের করো।
 
-যদি তথ্য অসম্পূর্ণ বা কোনো অর্ডার না থাকে, তাহলে শুধু লিখো:
+কড়া নিয়ম: তোমার উত্তর অবশ্যই শুধুমাত্র একটা valid JSON object হতে হবে। কোনো ব্যাখ্যা, ভূমিকা, মন্তব্য বা মার্কডাউন লিখবে না। শুধু নিচের যেকোনো একটা ফরম্যাট, আর কিছু না:
+
+তথ্য সম্পূর্ণ থাকলে:
+{"complete": true, "customer_name": "নাম", "customer_address": "ঠিকানা", "customer_phone": "ফোন", "order_details": "সংক্ষিপ্ত বিবরণ"}
+
+তথ্য অসম্পূর্ণ বা অর্ডার না থাকলে:
 {"complete": false}`;
 
   try {
@@ -123,20 +127,25 @@ async function extractOrderInfo(historyArr) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: extractPrompt }] },
-        contents: historyArr
+        contents: historyArr,
+        generationConfig: { responseMimeType: "application/json" }
       })
     });
     const data = await res.json();
     let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{"complete": false}';
     text = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+
+    // JSON object অংশটুকু বের করে নেওয়া (নিরাপত্তার জন্য)
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return { complete: false };
+
+    const parsed = JSON.parse(match[0]);
     return parsed;
   } catch (err) {
     console.error('extractOrderInfo error:', err.message);
     return { complete: false };
   }
 }
-
 // অর্ডার সেভ করা + নোটিফিকেশন পাঠানো
 async function saveOrderAndNotify(agentId, chatId, orderInfo, botToken) {
   try {
