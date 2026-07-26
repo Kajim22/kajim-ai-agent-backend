@@ -283,7 +283,9 @@ app.post("/telegram/webhook/:token", async (req, res) => {
       body: JSON.stringify({ chat_id: chatId, text: reply })
     });
 // অর্ডার শনাক্তকরণ (ফোন নাম্বার এলেই চেক করা হবে, প্রতিটা মেসেজে না)
-    const hasPhoneNumber = /\d{10,11}/.test(text);
+    const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
+const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
+const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
     if (!bot.orderSaved[chatId] && hasPhoneNumber) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);
       if (orderInfo.complete) {
