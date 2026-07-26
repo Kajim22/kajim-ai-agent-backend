@@ -33,7 +33,18 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    // পুরনো টেবিলে agent_id কলাম না থাকলে যোগ করা (safe upgrade)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        agent_id TEXT,
+        customer_name TEXT,
+        customer_address TEXT,
+        customer_phone TEXT,
+        order_details TEXT,
+        chat_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
     await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
     console.log('✓ Database ready');
   } catch (err) {
@@ -95,6 +106,69 @@ app.get("/knowledge/list/:agentId", async (req, res) => {
   }
 });
 
+// ==== Order Detection ====
+
+// একটা কথোপকথন থেকে অর্ডার তথ্য বের করার চেষ্টা করে (Gemini দিয়ে)
+async function extractOrderInfo(historyArr) {
+  const API_KEY = process.env.GEMINI_API_KEY;
+  const extractPrompt = `নিচের কথোপকথনটা পড়ে বলো গ্রাহক অর্ডার করার জন্য প্রয়োজনীয় তথ্য (নাম, ঠিকানা, ফোন নাম্বার) দিয়েছে কিনা। যদি দিয়ে থাকে, শুধুমাত্র এই JSON ফরম্যাটে উত্তর দাও, অন্য কিছু লিখবে না:
+{"complete": true, "customer_name": "...", "customer_address": "...", "customer_phone": "...", "order_details": "সংক্ষেপে কী অর্ডার করেছে"}
+
+যদি তথ্য অসম্পূর্ণ বা কোনো অর্ডার না থাকে, তাহলে শুধু লিখো:
+{"complete": false}`;
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: extractPrompt }] },
+        contents: historyArr
+      })
+    });
+    const data = await res.json();
+    let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{"complete": false}';
+    text = text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+    return parsed;
+  } catch (err) {
+    console.error('extractOrderInfo error:', err.message);
+    return { complete: false };
+  }
+}
+
+// অর্ডার সেভ করা + নোটিফিকেশন পাঠানো
+async function saveOrderAndNotify(agentId, chatId, orderInfo, botToken) {
+  try {
+    await pool.query(
+      `INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [agentId, orderInfo.customer_name, orderInfo.customer_address, orderInfo.customer_phone, orderInfo.order_details, String(chatId)]
+    );
+
+    const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
+    if (myChatId && botToken) {
+      const notifyText = `🛒 নতুন অর্ডার এসেছে!\n\n👤 নাম: ${orderInfo.customer_name}\n📍 ঠিকানা: ${orderInfo.customer_address}\n📞 ফোন: ${orderInfo.customer_phone}\n📦 বিবরণ: ${orderInfo.order_details}`;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: myChatId, text: notifyText })
+      });
+    }
+  } catch (err) {
+    console.error('saveOrderAndNotify error:', err.message);
+  }
+}
+
+// সব অর্ডার লিস্ট দেখা
+app.get("/orders/list", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM orders ORDER BY created_at DESC");
+    res.json(result.rows);
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // API Endpoint (টেস্ট সেন্টার থেকে কল হয়)
 app.post("/chat", async (req, res) => {
   const { message, systemPrompt, history, agentId } = req.body;
@@ -131,7 +205,7 @@ app.post("/chat", async (req, res) => {
 
 // ==== Telegram Bot Integration ====
 
-// প্রতিটা bot token -> { systemPrompt, agentId, histories }
+// প্রতিটা bot token -> { systemPrompt, agentId, histories, orderSaved }
 const telegramBots = {};
 
 // টেলিগ্রাম বট কানেক্ট করা
@@ -140,7 +214,7 @@ app.post("/telegram/connect", async (req, res) => {
   if (!botToken) return res.json({ success: false, error: "Bot token প্রয়োজন" });
 
   const prompt = systemPrompt || "তুমি একজন সহকারী।";
-  telegramBots[botToken] = { systemPrompt: prompt, agentId: agentId || null, histories: {} };
+  telegramBots[botToken] = { systemPrompt: prompt, agentId: agentId || null, histories: {}, orderSaved: {} };
 
   try {
     const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${botToken}`;
@@ -148,7 +222,6 @@ app.post("/telegram/connect", async (req, res) => {
     const setData = await setResp.json();
     if (!setData.ok) return res.json({ success: false, error: setData.description || "Webhook সেট করা যায়নি" });
 
-    // ডাটাবেসে সেভ করা (আগে থাকলে আপডেট করা)
     await pool.query(
       `INSERT INTO telegram_bots (bot_token, system_prompt, agent_id) VALUES ($1, $2, $3)
        ON CONFLICT (bot_token) DO UPDATE SET system_prompt = $2, agent_id = $3`,
@@ -200,6 +273,15 @@ app.post("/telegram/webhook/:token", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: reply })
     });
+
+    // অর্ডার শনাক্তকরণ (একবার সেভ হয়ে গেলে আর চেক করা হবে না)
+    if (!bot.orderSaved[chatId]) {
+      const orderInfo = await extractOrderInfo(bot.histories[chatId]);
+      if (orderInfo.complete) {
+        bot.orderSaved[chatId] = true;
+        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, token);
+      }
+    }
   } catch (err) {
     console.error("Telegram bot error:", err.message);
   }
@@ -289,7 +371,7 @@ async function restoreBots() {
   try {
     const result = await pool.query("SELECT bot_token, system_prompt, agent_id FROM telegram_bots");
     for (const row of result.rows) {
-      telegramBots[row.bot_token] = { systemPrompt: row.system_prompt, agentId: row.agent_id, histories: {} };
+      telegramBots[row.bot_token] = { systemPrompt: row.system_prompt, agentId: row.agent_id, histories: {}, orderSaved: {} };
 
       const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${row.bot_token}`;
       await fetch(`https://api.telegram.org/bot${row.bot_token}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
