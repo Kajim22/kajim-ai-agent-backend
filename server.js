@@ -282,9 +282,9 @@ app.post("/telegram/webhook/:token", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: reply })
     });
-
-    // অর্ডার শনাক্তকরণ (একবার সেভ হয়ে গেলে আর চেক করা হবে না)
-    if (!bot.orderSaved[chatId]) {
+// অর্ডার শনাক্তকরণ (ফোন নাম্বার এলেই চেক করা হবে, প্রতিটা মেসেজে না)
+    const hasPhoneNumber = /\d{10,11}/.test(text);
+    if (!bot.orderSaved[chatId] && hasPhoneNumber) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);
       if (orderInfo.complete) {
         bot.orderSaved[chatId] = true;
