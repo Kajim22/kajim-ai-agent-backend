@@ -62,7 +62,7 @@ async function getKnowledgeText(agentId) {
     );
     if (result.rows.length === 0) return '';
     const points = result.rows.map(r => `- ${r.content}`).join('\n');
-    return `\n\nনিচের তথ্যগুলো ব্যবহার করে উত্তর দাও (Knowledge Base):\n${points}`;
+    return `\n\nনিচের তথ্যগুলো ব্যবহার করে উত্তর দাও (Knowledge Base):\n${points}\n\nযদি কোনো Knowledge Base তথ্যে ছবির লিংক (URL) থাকে এবং গ্রাহক সেই পণ্যের ছবি দেখতে চায়, তাহলে তোমার উত্তরের একদম শেষে এই ফরম্যাটে লিখো: [IMAGE: ছবির-লিংক]। এই ট্যাগ শুধু তখনই ব্যবহার করবে যখন গ্রাহক সত্যিই ছবি দেখতে চেয়েছে বা ছবি দেখানো প্রাসঙ্গিক।`;
   } catch (err) {
     console.error('getKnowledgeText error:', err.message);
     return '';
@@ -312,16 +312,32 @@ app.post("/telegram/webhook/:token", async (req, res) => {
       })
     });
     const data = await geminiRes.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";
+    let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";
 
     bot.histories[chatId].push({ role: "model", parts: [{ text: reply }] });
     if (bot.histories[chatId].length > 20) bot.histories[chatId] = bot.histories[chatId].slice(-20);
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: reply })
-    });
+    // যদি রিপ্লাই-এ ছবির ট্যাগ থাকে, সেটা বের করে আলাদা করা
+    const imageMatch = reply.match(/\[IMAGE:\s*(https?:\/\/[^\]\s]+)\]/);
+    let imageUrl = null;
+    if (imageMatch) {
+      imageUrl = imageMatch[1];
+      reply = reply.replace(imageMatch[0], '').trim();
+    }
+
+    if (imageUrl) {
+      await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, photo: imageUrl, caption: reply })
+      });
+    } else {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: reply })
+      });
+    }
 
     // অর্ডার শনাক্তকরণ (ফোন নাম্বার এলেই চেক করা হবে, প্রতিটা মেসেজে না)
     const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
