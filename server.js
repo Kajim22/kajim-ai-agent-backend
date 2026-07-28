@@ -108,7 +108,6 @@ app.get("/knowledge/list/:agentId", async (req, res) => {
 
 // ==== Order Detection ====
 
-// একটা কথোপকথন থেকে অর্ডার তথ্য বের করার চেষ্টা করে (Gemini দিয়ে)
 async function extractOrderInfo(historyArr) {
   const API_KEY = process.env.GEMINI_API_KEY;
   const extractPrompt = `তুমি একটা তথ্য বের করার টুল। নিচের কথোপকথন থেকে গ্রাহকের অর্ডার তথ্য (নাম, ঠিকানা, ফোন) বের করো।
@@ -135,7 +134,6 @@ async function extractOrderInfo(historyArr) {
     let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{"complete": false}';
     text = text.replace(/```json|```/g, '').trim();
 
-    // JSON object অংশটুকু বের করে নেওয়া (নিরাপত্তার জন্য)
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) return { complete: false };
 
@@ -146,7 +144,7 @@ async function extractOrderInfo(historyArr) {
     return { complete: false };
   }
 }
-// অর্ডার সেভ করা + নোটিফিকেশন পাঠানো
+
 async function saveOrderAndNotify(agentId, chatId, orderInfo, botToken) {
   try {
     await pool.query(
@@ -168,7 +166,6 @@ async function saveOrderAndNotify(agentId, chatId, orderInfo, botToken) {
   }
 }
 
-// সব অর্ডার লিস্ট দেখা
 app.get("/orders/list", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM orders ORDER BY created_at DESC");
@@ -214,10 +211,8 @@ app.post("/chat", async (req, res) => {
 
 // ==== Telegram Bot Integration ====
 
-// প্রতিটা bot token -> { systemPrompt, agentId, histories, orderSaved }
 const telegramBots = {};
 
-// টেলিগ্রাম বট কানেক্ট করা
 app.post("/telegram/connect", async (req, res) => {
   const { botToken, systemPrompt, agentId } = req.body;
   if (!botToken) return res.json({ success: false, error: "Bot token প্রয়োজন" });
@@ -243,6 +238,22 @@ app.post("/telegram/connect", async (req, res) => {
   }
 });
 
+// Telegram থেকে ফাইল ডাউনলোড করে base64 বানানোর হেল্পার
+async function getTelegramFileBase64(token, fileId) {
+  try {
+    const fileRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
+    const fileData = await fileRes.json();
+    const filePath = fileData?.result?.file_path;
+    if (!filePath) return null;
+    const fileUrl = `https://api.telegram.org/file/bot${token}/${filePath}`;
+    const fileBuffer = await fetch(fileUrl).then(r => r.arrayBuffer());
+    return Buffer.from(fileBuffer).toString('base64');
+  } catch (err) {
+    console.error('getTelegramFileBase64 error:', err.message);
+    return null;
+  }
+}
+
 // টেলিগ্রাম থেকে আসা মেসেজ রিসিভ করা
 app.post("/telegram/webhook/:token", async (req, res) => {
   const token = req.params.token;
@@ -252,11 +263,40 @@ app.post("/telegram/webhook/:token", async (req, res) => {
 
   const update = req.body;
   const chatId = update?.message?.chat?.id;
-  const text = update?.message?.text;
-  if (!chatId || !text) return;
+  if (!chatId) return;
+
+  const textMsg = update?.message?.text;
+  const photo = update?.message?.photo;
+  const voice = update?.message?.voice;
+
+  if (!textMsg && !photo && !voice) return;
+
+  let userParts = [];
+  let text = textMsg || '';
+
+  try {
+    if (photo && photo.length > 0) {
+      const largestPhoto = photo[photo.length - 1];
+      const base64 = await getTelegramFileBase64(token, largestPhoto.file_id);
+      if (base64) {
+        userParts.push({ inline_data: { mime_type: "image/jpeg", data: base64 } });
+        text = textMsg || 'এই ছবিটা দেখে সাহায্য করো।';
+      }
+    } else if (voice) {
+      const base64 = await getTelegramFileBase64(token, voice.file_id);
+      if (base64) {
+        userParts.push({ inline_data: { mime_type: "audio/ogg", data: base64 } });
+        text = 'এই ভয়েস মেসেজটা শুনে উত্তর দাও।';
+      }
+    }
+  } catch (err) {
+    console.error('File processing error:', err.message);
+  }
+
+  userParts.push({ text });
 
   if (!bot.histories[chatId]) bot.histories[chatId] = [];
-  bot.histories[chatId].push({ role: "user", parts: [{ text }] });
+  bot.histories[chatId].push({ role: "user", parts: userParts });
 
   const API_KEY = process.env.GEMINI_API_KEY;
   try {
@@ -282,10 +322,11 @@ app.post("/telegram/webhook/:token", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: reply })
     });
-// অর্ডার শনাক্তকরণ (ফোন নাম্বার এলেই চেক করা হবে, প্রতিটা মেসেজে না)
+
+    // অর্ডার শনাক্তকরণ (ফোন নাম্বার এলেই চেক করা হবে, প্রতিটা মেসেজে না)
     const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
-const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
-const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
+    const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
+    const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
     if (!bot.orderSaved[chatId] && hasPhoneNumber) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);
       if (orderInfo.complete) {
@@ -298,7 +339,6 @@ const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
   }
 });
 
-// সেভ করা সব bot দেখার এন্ডপয়েন্ট (ডাটাবেসে কী আছে যাচাই করতে)
 app.get("/telegram/list", async (req, res) => {
   try {
     const result = await pool.query("SELECT bot_token, system_prompt, agent_id, created_at FROM telegram_bots ORDER BY created_at DESC");
