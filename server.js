@@ -14,6 +14,22 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// Facebook webhook event de-duplication (DB-backed for restarts/multiple instances)
+async function isFacebookEventProcessed(eventId) {
+  if (!eventId) return false;
+  try {
+    const result = await pool.query(
+      `INSERT INTO facebook_events (event_id) VALUES ($1)
+       ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+      [String(eventId)]
+    );
+    return result.rowCount === 0;
+  } catch (err) {
+    console.error('Facebook event de-duplication error:', err.message);
+    return false;
+  }
+}
+
 // টেবিল তৈরি করা (প্রথমবার চালু হওয়ার সময়)
 async function initDB() {
   try {
@@ -55,6 +71,12 @@ async function initDB() {
       )
     `);
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS facebook_events (
+        event_id TEXT PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id SERIAL PRIMARY KEY,
         platform TEXT NOT NULL,
@@ -66,6 +88,7 @@ async function initDB() {
       )
     `);
     await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_facebook_events_created_at ON facebook_events(created_at)`);
     console.log('✓ Database ready');
   } catch (err) {
     console.error('Database init error:', err.message);
@@ -258,11 +281,7 @@ app.post("/chat", async (req, res) => {
     });
 
     const data = await response.json();
-    
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || 
-                  data?.error?.message || 
-                  "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
-
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || data?.error?.message || "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
     res.json({ reply });
   } catch (err) {
     res.json({ reply: "সার্ভার এরর: " + err.message });
@@ -326,7 +345,6 @@ app.post("/telegram/webhook/:token", async (req, res) => {
   const textMsg = update?.message?.text;
   const photo = update?.message?.photo;
   const voice = update?.message?.voice;
-
   if (!textMsg && !photo && !voice) return;
 
   let userParts = [];
@@ -352,7 +370,6 @@ app.post("/telegram/webhook/:token", async (req, res) => {
   }
 
   userParts.push({ text });
-
   if (!bot.histories[chatId]) bot.histories[chatId] = await loadChatHistory('telegram', chatId);
   bot.histories[chatId].push({ role: "user", parts: userParts });
   await saveChatMessage('telegram', chatId, bot.agentId, 'user', text);
@@ -361,41 +378,24 @@ app.post("/telegram/webhook/:token", async (req, res) => {
   try {
     const knowledgeText = await getKnowledgeText(bot.agentId);
     const fullPrompt = bot.systemPrompt + knowledgeText;
-
     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: fullPrompt }] },
-        contents: bot.histories[chatId]
-      })
+      body: JSON.stringify({ system_instruction: { parts: [{ text: fullPrompt }] }, contents: bot.histories[chatId] })
     });
     const data = await geminiRes.json();
     let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";
-
     bot.histories[chatId].push({ role: "model", parts: [{ text: reply }] });
     if (bot.histories[chatId].length > 20) bot.histories[chatId] = bot.histories[chatId].slice(-20);
     await saveChatMessage('telegram', chatId, bot.agentId, 'model', reply);
 
     const imageMatch = reply.match(/\[IMAGE:\s*(https?:\/\/[^\]\s]+)\]/);
     let imageUrl = null;
-    if (imageMatch) {
-      imageUrl = imageMatch[1];
-      reply = reply.replace(imageMatch[0], '').trim();
-    }
-
+    if (imageMatch) { imageUrl = imageMatch[1]; reply = reply.replace(imageMatch[0], '').trim(); }
     if (imageUrl) {
-      await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, photo: imageUrl, caption: reply })
-      });
+      await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, photo: imageUrl, caption: reply }) });
     } else {
-      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: reply })
-      });
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: reply }) });
     }
 
     const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
@@ -445,16 +445,17 @@ app.post("/facebook/connect", async (req, res) => {
   }
 });
 
+// Meta webhook verification: keep the verify token only in the server environment.
 app.get("/webhook/facebook", (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.FB_VERIFY_TOKEN;
 
-  if (mode === 'subscribe' && token === process.env.FB_VERIFY_TOKEN) {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+  if (mode === 'subscribe' && verifyToken && token === verifyToken && challenge) {
+    return res.status(200).send(challenge);
   }
+  return res.sendStatus(403);
 });
 
 async function getUrlAsBase64(url) {
@@ -467,22 +468,75 @@ async function getUrlAsBase64(url) {
   }
 }
 
+async function getFacebookPage(pageId) {
+  if (facebookPages[pageId]) return facebookPages[pageId];
+  try {
+    const result = await pool.query(
+      "SELECT page_id, page_access_token, system_prompt, agent_id FROM facebook_pages WHERE page_id = $1 LIMIT 1",
+      [String(pageId)]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    facebookPages[row.page_id] = {
+      pageAccessToken: row.page_access_token,
+      systemPrompt: row.system_prompt,
+      agentId: row.agent_id,
+      histories: {},
+      orderSaved: {}
+    };
+    return facebookPages[row.page_id];
+  } catch (err) {
+    console.error('getFacebookPage error:', err.message);
+    return null;
+  }
+}
+
+async function sendFacebookMessage(page, senderId, message) {
+  const graphVersion = process.env.FB_GRAPH_VERSION || 'v20.0';
+  const url = `https://graph.facebook.com/${graphVersion}/me/messages?access_token=${page.pageAccessToken}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient: { id: senderId }, message })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) {
+    throw new Error(`Facebook send failed: ${data?.error?.message || response.statusText}`);
+  }
+  return data;
+}
+
 app.post("/webhook/facebook", async (req, res) => {
+  // Acknowledge immediately so Meta does not retry while AI processing is running.
   res.sendStatus(200);
   const body = req.body;
-  if (body.object !== 'page') return;
+  if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return;
 
-  for (const entry of body.entry || []) {
-    const pageId = entry.id;
-    const page = facebookPages[pageId];
-    if (!page) continue;
+  for (const entry of body.entry) {
+    const pageId = entry?.id;
+    if (!pageId || !Array.isArray(entry.messaging)) continue;
 
-    for (const event of entry.messaging || []) {
-      const senderId = event.sender?.id;
-      const textMsg = event.message?.text;
-      const attachments = event.message?.attachments;
+    // DB fallback makes Page → Agent routing survive Render restarts.
+    const page = await getFacebookPage(pageId);
+    if (!page) {
+      console.warn(`Facebook Page not connected: ${pageId}`);
+      continue;
+    }
+
+    for (const event of entry.messaging) {
+      const senderId = event?.sender?.id;
+      const eventId = event?.message?.mid || event?.postback?.mid || event?.message?.metadata;
+      const textMsg = event?.message?.text;
+      const attachments = event?.message?.attachments;
+
       if (!senderId) continue;
       if (!textMsg && !attachments) continue;
+
+      // Messenger may retry delivery; process a message ID only once.
+      if (eventId && await isFacebookEventProcessed(eventId)) {
+        console.log(`Skipping duplicate Facebook event: ${eventId}`);
+        continue;
+      }
 
       let userParts = [];
       let text = textMsg || '';
@@ -490,14 +544,15 @@ app.post("/webhook/facebook", async (req, res) => {
       try {
         if (attachments && attachments.length > 0) {
           const att = attachments[0];
-          if (att.type === 'image') {
-            const base64 = await getUrlAsBase64(att.payload.url);
+          const attachmentUrl = att?.payload?.url;
+          if (att.type === 'image' && attachmentUrl) {
+            const base64 = await getUrlAsBase64(attachmentUrl);
             if (base64) {
               userParts.push({ inline_data: { mime_type: "image/jpeg", data: base64 } });
               text = textMsg || 'এই ছবিটা দেখে সাহায্য করো।';
             }
-          } else if (att.type === 'audio') {
-            const base64 = await getUrlAsBase64(att.payload.url);
+          } else if (att.type === 'audio' && attachmentUrl) {
+            const base64 = await getUrlAsBase64(attachmentUrl);
             if (base64) {
               userParts.push({ inline_data: { mime_type: "audio/mp4", data: base64 } });
               text = 'এই ভয়েস মেসেজটা শুনে উত্তর দাও।';
@@ -509,16 +564,19 @@ app.post("/webhook/facebook", async (req, res) => {
       }
 
       userParts.push({ text });
-
       if (!page.histories[senderId]) page.histories[senderId] = await loadChatHistory('facebook', senderId);
       page.histories[senderId].push({ role: "user", parts: userParts });
       await saveChatMessage('facebook', senderId, page.agentId, 'user', text);
 
       const API_KEY = process.env.GEMINI_API_KEY;
+      if (!API_KEY) {
+        console.error('Facebook bot error: GEMINI_API_KEY is not configured');
+        continue;
+      }
+
       try {
         const knowledgeText = await getKnowledgeText(page.agentId);
         const fullPrompt = page.systemPrompt + knowledgeText;
-
         const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -528,12 +586,13 @@ app.post("/webhook/facebook", async (req, res) => {
           })
         });
         const data = await geminiRes.json();
+        if (!geminiRes.ok || data?.error) {
+          throw new Error(`Gemini request failed: ${data?.error?.message || geminiRes.statusText}`);
+        }
         let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";
 
         page.histories[senderId].push({ role: "model", parts: [{ text: reply }] });
-        if (page.histories[senderId].length > 20) {
-          page.histories[senderId] = page.histories[senderId].slice(-20);
-        }
+        if (page.histories[senderId].length > 20) page.histories[senderId] = page.histories[senderId].slice(-20);
         await saveChatMessage('facebook', senderId, page.agentId, 'model', reply);
 
         const imageMatch = reply.match(/\[IMAGE:\s*(https?:\/\/[^\]\s]+)\]/);
@@ -544,27 +603,10 @@ app.post("/webhook/facebook", async (req, res) => {
         }
 
         if (imageUrl) {
-          await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${page.pageAccessToken}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              recipient: { id: senderId },
-              message: { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } }
-            })
-          });
-          if (reply) {
-            await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${page.pageAccessToken}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ recipient: { id: senderId }, message: { text: reply } })
-            });
-          }
+          await sendFacebookMessage(page, senderId, { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } });
+          if (reply) await sendFacebookMessage(page, senderId, { text: reply });
         } else {
-          await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${page.pageAccessToken}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ recipient: { id: senderId }, message: { text: reply } })
-          });
+          await sendFacebookMessage(page, senderId, { text: reply });
         }
 
         const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
@@ -599,7 +641,6 @@ async function restoreBots() {
     const result = await pool.query("SELECT bot_token, system_prompt, agent_id FROM telegram_bots");
     for (const row of result.rows) {
       telegramBots[row.bot_token] = { systemPrompt: row.system_prompt, agentId: row.agent_id, histories: {}, orderSaved: {} };
-
       const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${row.bot_token}`;
       await fetch(`https://api.telegram.org/bot${row.bot_token}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
     }
