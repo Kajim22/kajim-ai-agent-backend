@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node -r ./customer-memory-order-hardening.js -r ./facebook-runtime-hardening.js -r ./gemini-model-alias.js -r ./facebook-webhook-alias.js server.js"
+    "start": "node -r ./advanced-kb-backward-compatible.js -r ./customer-memory-order-hardening.js -r ./facebook-runtime-hardening.js -r ./gemini-model-alias.js -r ./facebook-webhook-alias.js server.js"
   },
   "dependencies": {
     "pg": "^8.11.3",
