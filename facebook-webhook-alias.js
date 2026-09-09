@@ -22,8 +22,8 @@ express.application.post = function (path, ...handlers) {
         const { pageId, pageAccessToken } = req.body || {};
         if (!pageId || !pageAccessToken) return next();
 
-        const graphVersion = process.env.FB_GRAPH_VERSION || 'v20.0';
-        const url = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(String(pageId))}?fields=id&access_token=${encodeURIComponent(String(pageAccessToken))}`;
+        const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
+        const url = `https://graph.facebook.com/${graphVersion}/me?fields=id&access_token=${encodeURIComponent(String(pageAccessToken))}`;
         const response = await fetch(url);
         const data = await response.json().catch(() => ({}));
 
