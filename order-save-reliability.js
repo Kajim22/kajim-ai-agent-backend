@@ -177,24 +177,27 @@ function buildOrderConfirmationReply(orderInfo) {
     source = source.slice(0, helperPos) + confirmationHelper + '\n' + source.slice(helperPos);
   }
 
-  // Before sending the normal AI reply, detect a complete order draft. If the
-  // latest customer message is not an explicit confirmation, replace the AI
-  // reply with a clear confirmation request. No order is saved at this stage.
+  // Inject confirmation logic into Telegram and Facebook separately. Do not use
+  // the same generic anchor twice because that would redeclare const orderDraft.
   const telegramReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
   const telegramReplyReplacement = `${telegramReplyAnchor}
-    const orderDraft = await extractOrderInfo(bot.histories[chatId]);
-    if (orderDraft.complete && !customerConfirmedOrder(bot.histories[chatId])) {
-      reply = buildOrderConfirmationReply(orderDraft);
+    const telegramOrderDraft = await extractOrderInfo(bot.histories[chatId]);
+    if (telegramOrderDraft.complete && !customerConfirmedOrder(bot.histories[chatId])) {
+      reply = buildOrderConfirmationReply(telegramOrderDraft);
     }`;
-  source = source.replace(telegramReplyAnchor, telegramReplyReplacement);
+  const telegramReplyPos = source.indexOf(telegramReplyAnchor);
+  if (telegramReplyPos < 0) throw new Error('Order save reliability: Telegram reply anchor not found');
+  source = source.slice(0, telegramReplyPos) + telegramReplyReplacement + source.slice(telegramReplyPos + telegramReplyAnchor.length);
 
   const facebookReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
   const facebookReplyReplacement = `${facebookReplyAnchor}
-        const orderDraft = await extractOrderInfo(page.histories[senderId]);
-        if (orderDraft.complete && !customerConfirmedOrder(page.histories[senderId])) {
-          reply = buildOrderConfirmationReply(orderDraft);
+        const facebookOrderDraft = await extractOrderInfo(page.histories[senderId]);
+        if (facebookOrderDraft.complete && !customerConfirmedOrder(page.histories[senderId])) {
+          reply = buildOrderConfirmationReply(facebookOrderDraft);
         }`;
-  source = source.replace(facebookReplyAnchor, facebookReplyReplacement);
+  const facebookReplyPos = source.indexOf(facebookReplyAnchor, telegramReplyPos + telegramReplyReplacement.length);
+  if (facebookReplyPos < 0) throw new Error('Order save reliability: Facebook reply anchor not found');
+  source = source.slice(0, facebookReplyPos) + facebookReplyReplacement + source.slice(facebookReplyPos + facebookReplyAnchor.length);
 
   const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
