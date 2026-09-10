@@ -48,8 +48,7 @@ complete হলে: {"complete":true,"customer_name":"...","customer_address":".
 
     const data = await res.json();
     if (!res.ok || data?.error) return { complete: false };
-    let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    text = text.replace(/\\`\\`\\`json|\\`\\`\\`/g, '').trim();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const match = text.match(/\\{[\\s\\S]*\\}/);
     if (!match) return { complete: false };
 
