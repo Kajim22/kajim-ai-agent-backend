@@ -81,13 +81,27 @@ Module._extensions['.js'] = function orderConfirmationFinalizerLoader(module, fi
 
   source = source.slice(0, start) + replacement + source.slice(end);
 
+  // OLD SYSTEM: once name + address + phone are complete, save the order immediately.
+  // No extra "confirm?" message is required.
   source = source.replace(
-    /if \(!bot\.orderSaved\[chatId\] && hasPhoneNumber && customerConfirmedOrder\(bot\.histories\[chatId\]\)\)/g,
-    'if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId]))'
+    /if \(!bot\.orderSaved\[chatId\] && customerConfirmedOrder\(bot\.histories\[chatId\]\)\)/g,
+    'if (!bot.orderSaved[chatId])'
   );
   source = source.replace(
-    /if \(!page\.orderSaved\[senderId\] && hasPhoneNumber && customerConfirmedOrder\(page\.histories\[senderId\]\)\)/g,
-    'if (!page.orderSaved[senderId] && customerConfirmedOrder(page.histories[senderId]))'
+    /if \(!page\.orderSaved\[senderId\] && customerConfirmedOrder\(page\.histories\[senderId\]\)\)/g,
+    'if (!page.orderSaved[senderId])'
+  );
+
+  // The reliability layer used to replace the AI reply with a confirmation question.
+  // Replace that behavior with an automatic confirmation reply when the required
+  // customer information is complete. Cancellation words still stop the order.
+  source = source.replace(
+    /if \(telegramOrderDraft\.complete && !customerConfirmedOrder\(bot\.histories\[chatId\]\) && !customerCancelledOrder\(bot\.histories\[chatId\]\)\) \{\n\s*reply = buildOrderConfirmationReply\(telegramOrderDraft\);\n\s*\}/g,
+    `if (telegramOrderDraft.complete && !customerCancelledOrder(bot.histories[chatId])) {\n      reply = 'ধন্যবাদ! আপনার অর্ডারটি সফলভাবে কনফার্ম করা হয়েছে।\\n\\n👤 নাম: ' + telegramOrderDraft.customer_name + '\\n📍 ঠিকানা: ' + telegramOrderDraft.customer_address + '\\n📞 ফোন: ' + telegramOrderDraft.customer_phone + '\\n📦 পণ্য: ' + telegramOrderDraft.order_details;\n    }`
+  );
+  source = source.replace(
+    /if \(facebookOrderDraft\.complete && !customerConfirmedOrder\(page\.histories\[senderId\]\) && !customerCancelledOrder\(page\.histories\[senderId\]\)\) \{\n\s*reply = buildOrderConfirmationReply\(facebookOrderDraft\);\n\s*\}/g,
+    `if (facebookOrderDraft.complete && !customerCancelledOrder(page.histories[senderId])) {\n          reply = 'ধন্যবাদ! আপনার অর্ডারটি সফলভাবে কনফার্ম করা হয়েছে।\\n\\n👤 নাম: ' + facebookOrderDraft.customer_name + '\\n📍 ঠিকানা: ' + facebookOrderDraft.customer_address + '\\n📞 ফোন: ' + facebookOrderDraft.customer_phone + '\\n📦 পণ্য: ' + facebookOrderDraft.order_details;\n        }`
   );
 
   return module._compile(source, filename);
