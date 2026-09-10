@@ -1,22 +1,11 @@
 const express = require('express');
-const request = require('express/lib/request');
-const response = require('express/lib/response');
 
 // Some additive API modules register routes directly on express.application
-// before server.js creates the real app. That can leave a prototype router in
-// place and, in some startup orders, Express request/response prototypes can
-// also be missing. expressInit then crashes at setPrototypeOf(..., undefined).
+// before server.js creates the real app. Capture those route layers, but DO NOT
+// create express.application.request/response here. Express itself must create
+// those prototypes when express() is called so they get the real app instance
+// attached as `.app`.
 const proto = express.application;
-
-// Defensive repair: Express normally creates these in express/lib/express.js.
-// Re-create them only when missing; never replace valid prototypes.
-if (!proto.request || (typeof proto.request !== 'object' && typeof proto.request !== 'function')) {
-  proto.request = Object.create(request);
-}
-if (!proto.response || (typeof proto.response !== 'object' && typeof proto.response !== 'function')) {
-  proto.response = Object.create(response);
-}
-
 const protoRouter = proto && proto._router;
 const preloadedRoutes = protoRouter && Array.isArray(protoRouter.stack)
   ? protoRouter.stack.filter(layer => layer && layer.route)
