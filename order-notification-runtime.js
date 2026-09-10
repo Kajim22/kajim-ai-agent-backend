@@ -1,4 +1,6 @@
-// Order notification runtime: additive, production-safe notifications for website and Telegram.
+// Website order-notification runtime.
+// Telegram notifications already happen in the existing order-save flow,
+// so this layer intentionally handles only the website side to avoid duplicates.
 const express = require('express');
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
@@ -16,12 +18,8 @@ function orderNotificationPayload(row) {
   };
 }
 
-function getWebsiteNotificationUrl() {
-  return String(process.env.ORDER_NOTIFICATION_WEBHOOK_URL || '').trim();
-}
-
 async function notifyWebsite(row) {
-  const url = getWebsiteNotificationUrl();
+  const url = String(process.env.ORDER_NOTIFICATION_WEBHOOK_URL || '').trim();
   if (!url) return { ok: false, skipped: true };
   try {
     const response = await fetch(url, {
@@ -37,51 +35,33 @@ async function notifyWebsite(row) {
   }
 }
 
-async function notifyTelegram(row) {
-  const chatId = String(process.env.MY_TELEGRAM_CHAT_ID || '').trim();
-  if (!chatId) return { ok: false, skipped: true };
+global.notifyOrderCreated = async function notifyOrderCreated(row) {
+  const result = await notifyWebsite(row);
+  console.log(`✓ Website order notification: order=${row.id} ${result.ok ? 'sent' : 'skipped/failed'}`);
+  return result;
+};
 
-  try {
-    const result = await pool.query('SELECT bot_token FROM telegram_bots ORDER BY created_at ASC LIMIT 1');
-    const token = result.rows[0]?.bot_token;
-    if (!token) return { ok: false, skipped: true };
-
-    const text = `🛒 নতুন অর্ডার এসেছে!\n\n🆔 #${row.id}\n👤 নাম: ${row.customer_name}\n📞 ফোন: ${row.customer_phone}\n📍 ঠিকানা: ${row.customer_address}\n📦 পণ্য: ${row.order_details}`;
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return { ok: true };
-  } catch (err) {
-    console.error('Telegram order notification failed:', err.message);
-    return { ok: false, error: err.message };
-  }
-}
-
-async function notifyOrderCreated(row) {
-  const [website, telegram] = await Promise.all([notifyWebsite(row), notifyTelegram(row)]);
-  console.log(`✓ Order notifications: order=${row.id} website=${website.ok ? 'sent' : 'skipped/failed'} telegram=${telegram.ok ? 'sent' : 'skipped/failed'}`);
-}
-
-// Public API for the existing server-side order saver.
-global.notifyOrderCreated = notifyOrderCreated;
-
-// Website polling fallback: useful even if the frontend does not have a webhook yet.
+// Polling fallback: the website can detect new orders even when no webhook URL is configured.
 express.application.get.call(express.application, '/orders/notifications/:agentId', async (req, res) => {
   try {
     const agentId = String(req.params.agentId || '').trim();
     if (!agentId) return res.json({ success: false, error: 'agentId প্রয়োজন' });
-    const sinceId = Number(req.query.sinceId || 0);
-    const r = await pool.query(
+
+    const rawSinceId = Number(req.query.sinceId || 0);
+    const sinceId = Number.isFinite(rawSinceId) && rawSinceId >= 0 ? rawSinceId : 0;
+    const result = await pool.query(
       `SELECT id, agent_id, customer_name, customer_phone, customer_address, order_details, chat_id, created_at
-       FROM orders WHERE agent_id=$1 AND id>$2 ORDER BY id ASC LIMIT 50`,
-      [agentId, Number.isFinite(sinceId) ? sinceId : 0]
+       FROM orders
+       WHERE agent_id = $1 AND id > $2
+       ORDER BY id ASC
+       LIMIT 50`,
+      [agentId, sinceId]
     );
-    res.json({ success: true, orders: r.rows.map(orderNotificationPayload) });
-  } catch (e) {
-    res.json({ success: false, error: e.message });
+
+    res.json({ success: true, orders: result.rows.map(orderNotificationPayload) });
+  } catch (err) {
+    console.error('Order notification polling error:', err.message);
+    res.json({ success: false, error: err.message });
   }
 });
 
