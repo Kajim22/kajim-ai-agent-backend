@@ -1,227 +1,143 @@
-// Reliable order extraction/save patch. Loaded as a server.js source transformer.
+// Reliable order confirmation patch. Loaded as a server.js source transformer.
 const fs = require('fs');
 const Module = require('module');
 const path = require('path');
 
 const originalLoader = Module._extensions['.js'];
 
-Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename) {
+Module._extensions['.js'] = function orderConfirmationLoader(module, filename) {
   if (path.basename(filename) !== 'server.js') return originalLoader(module, filename);
 
   let source = fs.readFileSync(filename, 'utf8');
 
-  const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
-`  const API_KEY = process.env.GEMINI_API_KEY;
+  // Deterministic order extraction. Gemini is deliberately not used here so
+  // quota/timeouts can never bypass the confirmation step.
+  const extractReplacement = `async function extractOrderInfo(historyArr) {
+  const messages = (historyArr || []).filter(m => m.role === 'user');
+  const allText = messages.map(m => (m.parts || []).map(p => p.text || '').join(' ')).join(' ');
+  const normalized = allText.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
 
-  // Deterministic extraction first. This is also what the confirmation prompt uses,
-  // so an order draft never depends on Gemini quota.
-  const fallbackExtract = () => {
-    const messages = (historyArr || []).filter(m => m.role === 'user');
-    const text = messages.map(m =>
-      (m.parts || []).map(p => p.text || '').join(' ')
-    ).join(' ');
-    const normalized = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
-    const phoneMatch = normalized.match(/(?:\\+?88)?01[3-9]\\d{8}/);
-    if (!phoneMatch) return { complete: false };
+  const clean = value => String(value || '').replace(/^[-:：\s]+|[-:：\s]+$/g, '').trim();
+  const userTexts = messages.map(m => (m.parts || []).map(p => p.text || '').join(' ').trim()).filter(Boolean);
+  const modelMessages = (historyArr || []).filter(m => m.role === 'model').map(m => (m.parts || []).map(p => p.text || '').join(' '));
 
-    const phone = phoneMatch[0].replace(/^88/, '');
+  let name = '';
+  let address = '';
+  let phone = '';
 
-    let name = '';
-    const namePatterns = [
-      /(?:নাম|name)\\s*[:：-]?\\s*([^,\\n।]+)/i,
-      /(?:আমার নাম|my name is)\\s*[:：-]?\\s*([^,\\n।]+)/i,
-      /(?:আমি|i am)\\s+([^,\\n।]{2,40})/i
-    ];
-    for (const pattern of namePatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        name = match[1].trim();
-        break;
-      }
-    }
+  const namePatterns = [
+    /(?:আমার নাম|নাম|name|my name is)\\s*[:：-]?\\s*([^,\\n।]+)/i
+  ];
+  const addressPatterns = [
+    /(?:ঠিকানা|address|এড্রেস)\\s*[:：-]?\\s*([^\\n।]+)/i,
+    /(?:থাকি|বাসা|বাড়ি|বাড়ি|বাসস্থান)\\s*[:：-]?\\s*([^\\n।]+)/i
+  ];
 
-    let address = '';
-    const addressPatterns = [
-      /(?:ঠিকানা|address|এড্রেস)\\s*[:：-]?\\s*([^\\n।]+)/i,
-      /(?:থাকি|বাসা|বাড়ি|বাড়ি|বাসস্থান)\\s*[:：-]?\\s*([^\\n।]+)/i
-    ];
-    for (const pattern of addressPatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        address = match[1].trim();
-        break;
-      }
-    }
-
-    const productKeywords = /টি-?শার্ট|t-?shirt|গেঞ্জি|পাঞ্জাবি|শার্ট|প্যান্ট|জামা|কাপড়|কাপড়|জুতা|ব্যাগ|ছাতা|product|পণ্য|অর্ডার/i;
-    let orderDetails = '';
-    for (const message of messages) {
-      const messageText = (message.parts || []).map(p => p.text || '').join(' ').trim();
-      if (messageText && productKeywords.test(messageText) && !/^(হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|confirm|confirmed)$/i.test(messageText)) {
-        orderDetails = messageText;
-      }
-    }
-
-    if (!name) name = 'গ্রাহক';
-    if (!address) return { complete: false };
-    if (!orderDetails) orderDetails = 'Confirmed order';
-
-    return {
-      complete: true,
-      customer_name: name,
-      customer_address: address,
-      customer_phone: phone,
-      order_details: orderDetails
-    };
-  };
-
-  const deterministic = fallbackExtract();
-  if (deterministic.complete) return deterministic;
-
-  // Gemini is only an enhancement when deterministic extraction is incomplete.
-  // A quota/429/network failure must never block a confirmed order.
-  try {
-    if (!API_KEY) return deterministic;
-
-    const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে শুধু গ্রাহকের দেওয়া নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। বটের নিজের প্রশ্ন বা উত্তরকে গ্রাহকের তথ্য হিসেবে কখনো নিও না। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
-
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(API_KEY), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: extractPrompt }] },
-        contents: historyArr,
-        generationConfig: { responseMimeType: 'application/json' }
-      })
-    });
-
-    const raw = await response.text();
-    if (!response.ok) {
-      console.error('extractOrderInfo Gemini HTTP ' + response.status + ': ' + raw.slice(0, 500));
-      return fallbackExtract();
-    }
-
-    let data;
-    try { data = JSON.parse(raw); } catch (_) { return fallbackExtract(); }
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const match = text.match(/\\{[\\s\\S]*\\}/);
-    if (!match) return fallbackExtract();
-
-    try {
-      const parsed = JSON.parse(match[0]);
-      if (parsed && parsed.complete === true && parsed.customer_phone && parsed.customer_address) return parsed;
-      return fallbackExtract();
-    } catch (_) {
-      return fallbackExtract();
-    }
-  } catch (err) {
-    console.error('extractOrderInfo error:', err.message);
-    return fallbackExtract();
+  for (const p of namePatterns) {
+    const m = allText.match(p);
+    if (m && m[1]) { name = clean(m[1]); break; }
   }
-}`;
+  for (const p of addressPatterns) {
+    const m = allText.match(p);
+    if (m && m[1]) { address = clean(m[1]); break; }
+  }
+
+  const phoneMatch = normalized.match(/(?:\\+?88)?01[3-9]\\d{8}/);
+  if (phoneMatch) phone = phoneMatch[0].replace(/^88/, '');
+
+  // If the customer answered the bot's specific question with a plain value,
+  // use that answer. This keeps the old conversational flow working.
+  for (let i = 0; i < (historyArr || []).length - 1; i++) {
+    const current = historyArr[i];
+    const next = historyArr[i + 1];
+    if (current?.role !== 'model' || next?.role !== 'user') continue;
+    const prompt = (current.parts || []).map(p => p.text || '').join(' ').toLowerCase();
+    const answer = clean((next.parts || []).map(p => p.text || '').join(' '));
+    if (!answer) continue;
+    if (!name && /নাম|name/.test(prompt) && !/ঠিকানা|address|ফোন|phone|নাম্বার|number/.test(prompt)) name = answer;
+    if (!address && /ঠিকানা|address|এড্রেস/.test(prompt) && !/ফোন|phone|নাম্বার|number/.test(prompt)) address = answer;
+    if (!phone && /ফোন|phone|নাম্বার|number/.test(prompt)) {
+      const n = answer.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d)).match(/(?:\\+?88)?01[3-9]\\d{8}/);
+      if (n) phone = n[0].replace(/^88/, '');
+    }
+  }
+
+  const confirmationWords = /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)$/i;
+  const cancelWords = /^(না|না লাগবে না|বাতিল|ক্যানসেল|cancel|বাদ দিন|বাদ দেন|অর্ডার করবেন না)$/i;
+  const productKeywords = /টি-?শার্ট|t-?shirt|গেঞ্জি|পাঞ্জাবি|শার্ট|প্যান্ট|জামা|কাপড়|কাপড়|জুতা|ব্যাগ|ছাতা|পণ্য|অর্ডার/i;
+  let orderDetails = '';
+  for (const t of userTexts) {
+    if (confirmationWords.test(t) || cancelWords.test(t)) continue;
+    if (productKeywords.test(t)) orderDetails = t;
+  }
+
+  // A draft is complete only when the customer actually supplied all required data.
+  if (!name || !address || !phone) return { complete: false };
+  if (!orderDetails) orderDetails = 'Customer order';
+
+  return {
+    complete: true,
+    customer_name: name,
+    customer_address: address,
+    customer_phone: phone,
+    order_details: orderDetails
+  };
+}
+`;
 
   const extractStart = source.indexOf('async function extractOrderInfo(historyArr) {');
   const extractEnd = source.indexOf('\n\nasync function saveOrderAndNotify', extractStart);
-  if (extractStart < 0 || extractEnd < 0) throw new Error('Order save reliability: extractOrderInfo block not found');
+  if (extractStart < 0 || extractEnd < 0) throw new Error('Order confirmation patch: extract block not found');
   source = source.slice(0, extractStart) + extractReplacement + source.slice(extractEnd);
 
-  const saveReplacement = 'async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {\n' +
-`  try {
-    const result = await pool.query(
-      'INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-      [agentId, orderInfo.customer_name, orderInfo.customer_address, orderInfo.customer_phone, orderInfo.order_details, String(chatId)]
-    );
-
-    console.log('✓ Order saved: id=' + (result.rows[0]?.id || 'unknown') + ' agent=' + agentId + ' chat=' + chatId);
-
-    const notifyText = '🛒 নতুন অর্ডার এসেছে! (' + notifyPlatform + ') | নাম: ' + orderInfo.customer_name + ' | ঠিকানা: ' + orderInfo.customer_address + ' | ফোন: ' + orderInfo.customer_phone + ' | বিবরণ: ' + orderInfo.order_details;
-    const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
-    if (myChatId && notifyToken) {
-      await fetch('https://api.telegram.org/bot' + notifyToken + '/sendMessage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: myChatId, text: notifyText })
-      });
-    }
-    return true;
-  } catch (err) {
-    console.error('saveOrderAndNotify error:', err.message);
-    return false;
-  }
-}`;
-
-  const saveStart = source.indexOf('async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {');
-  const saveEnd = source.indexOf('\n\nasync function notifyOwnerViaAnyTelegramBot', saveStart);
-  if (saveStart < 0 || saveEnd < 0) throw new Error('Order save reliability: saveOrderAndNotify block not found');
-  source = source.slice(0, saveStart) + saveReplacement + source.slice(saveEnd);
-
   const confirmationHelper = `
-// Save an order only after the customer explicitly confirms it.
 function customerConfirmedOrder(historyArr) {
   const messages = (historyArr || []).filter(m => m.role === 'user');
   if (!messages.length) return false;
-  const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim().toLowerCase();
+  const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim();
   if (!latest) return false;
-  if (/cancel|ক্যানসেল|বাতিল|লাগবে না|বাদ দিন|বাদ দেন|না,? ?লাগবে না|অর্ডার করবেন না/.test(latest)) return false;
-  return /(^|[\\s,।.!?])(?:হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন|নিশ্চিত|নিশ্চিত করছি|হ্যাঁ অর্ডার করুন|জি অর্ডার করুন)(?=$|[\\s,।.!?])/i.test(latest);
+  if (/^(না|না লাগবে না|বাতিল|ক্যানসেল|cancel|বাদ দিন|বাদ দেন|অর্ডার করবেন না)$/i.test(latest)) return false;
+  return /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)$/i.test(latest);
 }
 
 function buildOrderConfirmationReply(orderInfo) {
-  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি। নাম: ' + orderInfo.customer_name + ' | ঠিকানা: ' + orderInfo.customer_address + ' | ফোন: ' + orderInfo.customer_phone + '। অর্ডারটি কনফার্ম করতে দয়া করে “জি, অর্ডার করুন” বা “কনফার্ম” লিখুন।';
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
 }
 `;
-  const helperAnchor = 'const telegramBots = {};';
+
   if (!source.includes('function customerConfirmedOrder(historyArr)')) {
-    const helperPos = source.indexOf(helperAnchor);
-    if (helperPos < 0) throw new Error('Order save reliability: telegramBots anchor not found');
-    source = source.slice(0, helperPos) + confirmationHelper + '\n' + source.slice(helperPos);
+    const anchor = 'const telegramBots = {};';
+    const pos = source.indexOf(anchor);
+    if (pos < 0) throw new Error('Order confirmation patch: helper anchor not found');
+    source = source.slice(0, pos) + confirmationHelper + '\n' + source.slice(pos);
   }
 
-  // Inject confirmation logic into Telegram and Facebook separately. Do not use
-  // the same generic anchor twice because that would redeclare const orderDraft.
-  const telegramReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
-  const telegramReplyReplacement = `${telegramReplyAnchor}
-    const telegramOrderDraft = await extractOrderInfo(bot.histories[chatId]);
-    if (telegramOrderDraft.complete && !customerConfirmedOrder(bot.histories[chatId])) {
-      reply = buildOrderConfirmationReply(telegramOrderDraft);
-    }`;
-  const telegramReplyPos = source.indexOf(telegramReplyAnchor);
-  if (telegramReplyPos < 0) throw new Error('Order save reliability: Telegram reply anchor not found');
-  source = source.slice(0, telegramReplyPos) + telegramReplyReplacement + source.slice(telegramReplyPos + telegramReplyAnchor.length);
+  // Before sending the AI reply, if all order data is present and the latest
+  // customer message is not a confirmation, force the confirmation question.
+  const replyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
+  const replyReplacements = [
+    `${replyAnchor}\n    const telegramOrderDraft = await extractOrderInfo(bot.histories[chatId]);\n    if (telegramOrderDraft.complete && !customerConfirmedOrder(bot.histories[chatId])) {\n      reply = buildOrderConfirmationReply(telegramOrderDraft);\n    }`,
+    `${replyAnchor}\n        const facebookOrderDraft = await extractOrderInfo(page.histories[senderId]);\n        if (facebookOrderDraft.complete && !customerConfirmedOrder(page.histories[senderId])) {\n          reply = buildOrderConfirmationReply(facebookOrderDraft);\n        }`
+  ];
 
-  const facebookReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
-  const facebookReplyReplacement = `${facebookReplyAnchor}
-        const facebookOrderDraft = await extractOrderInfo(page.histories[senderId]);
-        if (facebookOrderDraft.complete && !customerConfirmedOrder(page.histories[senderId])) {
-          reply = buildOrderConfirmationReply(facebookOrderDraft);
-        }`;
-  const facebookReplyPos = source.indexOf(facebookReplyAnchor, telegramReplyPos + telegramReplyReplacement.length);
-  if (facebookReplyPos < 0) throw new Error('Order save reliability: Facebook reply anchor not found');
-  source = source.slice(0, facebookReplyPos) + facebookReplyReplacement + source.slice(facebookReplyPos + facebookReplyAnchor.length);
+  let firstReplyPos = source.indexOf(replyAnchor);
+  if (firstReplyPos < 0) throw new Error('Order confirmation patch: Telegram reply anchor not found');
+  source = source.slice(0, firstReplyPos) + replyReplacements[0] + source.slice(firstReplyPos + replyAnchor.length);
 
-  const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
-      const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
-  const telegramNew = `if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId])) {
-      const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
-  source = source.replace(telegramOld, telegramNew);
+  const secondReplyPos = source.indexOf(replyAnchor, firstReplyPos + replyReplacements[0].length);
+  if (secondReplyPos < 0) throw new Error('Order confirmation patch: Facebook reply anchor not found');
+  source = source.slice(0, secondReplyPos) + replyReplacements[1] + source.slice(secondReplyPos + replyAnchor.length);
 
-  const facebookOld = `if (!page.orderSaved[senderId] && hasPhoneNumber && customerConfirmedOrder(page.histories[senderId])) {
-          const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
-  const facebookNew = `if (!page.orderSaved[senderId] && customerConfirmedOrder(page.histories[senderId])) {
-          const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
-  source = source.replace(facebookOld, facebookNew);
+  // CRITICAL: saving is now gated ONLY by explicit customer confirmation.
+  source = source.replace(
+    `if (!bot.orderSaved[chatId] && hasPhoneNumber) {\n      const orderInfo = await extractOrderInfo(bot.histories[chatId]);\n      if (orderInfo.complete) {\n        bot.orderSaved[chatId] = true;\n        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);\n      }\n    }`,
+    `if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId])) {\n      const orderInfo = await extractOrderInfo(bot.histories[chatId]);\n      if (orderInfo.complete) {\n        const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);\n        if (saved) bot.orderSaved[chatId] = true;\n      }\n    }`
+  );
 
-  const telegramSavedOld = `bot.orderSaved[chatId] = true;
-        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);`;
-  const telegramSavedNew = `const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
-        if (saved) bot.orderSaved[chatId] = true;`;
-  source = source.replace(telegramSavedOld, telegramSavedNew);
-
-  const facebookSavedOld = `page.orderSaved[senderId] = true;
-            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);`;
-  const facebookSavedNew = `const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
-            if (saved) page.orderSaved[senderId] = true;`;
-  source = source.replace(facebookSavedOld, facebookSavedNew);
+  source = source.replace(
+    `if (!page.orderSaved[senderId] && hasPhoneNumber) {\n          const orderInfo = await extractOrderInfo(page.histories[senderId]);\n          if (orderInfo.complete) {\n            page.orderSaved[senderId] = true;\n            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);\n            await notifyOwnerViaAnyTelegramBot(`,
+    `if (!page.orderSaved[senderId] && customerConfirmedOrder(page.histories[senderId])) {\n          const orderInfo = await extractOrderInfo(page.histories[senderId]);\n          if (orderInfo.complete) {\n            const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);\n            if (saved) page.orderSaved[senderId] = true;\n            await notifyOwnerViaAnyTelegramBot(`
+  );
 
   return module._compile(source, filename);
 };
