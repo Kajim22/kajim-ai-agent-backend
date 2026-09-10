@@ -1,5 +1,5 @@
-// Make order extraction independent of fragile JSON-mode/model combinations and
-// make the order insert report success before the in-memory orderSaved flag is set.
+// Make order extraction independent of fragile JSON-mode/model combinations
+// and make the order insert report success before the in-memory flag is set.
 const fs = require('fs');
 const Module = require('module');
 const path = require('path');
@@ -11,15 +11,9 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   let source = fs.readFileSync(filename, 'utf8');
 
-  const extractReplacement = `async function extractOrderInfo(historyArr) {
-  const API_KEY = process.env.GEMINI_API_KEY;
-  const extractPrompt = \`তুমি একটি অর্ডার তথ্য বের করার টুল। নিচের কথোপকথন থেকে গ্রাহকের অর্ডারের নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো।
-
-শুধু valid JSON object দাও। কোনো markdown, ব্যাখ্যা বা অতিরিক্ত লেখা দেবে না।
-সম্পূর্ণ হলে:
-{"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের সংক্ষিপ্ত বিবরণ"}
-অসম্পূর্ণ হলে:
-{"complete":false}\`;
+  const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
+`  const API_KEY = process.env.GEMINI_API_KEY;
+  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। নিচের কথোপকথন থেকে গ্রাহকের অর্ডারের নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো।\n\nশুধু valid JSON object দাও। কোনো markdown, ব্যাখ্যা বা অতিরিক্ত লেখা দেবে না।\nসম্পূর্ণ হলে:\n{"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের সংক্ষিপ্ত বিবরণ"}\nঅসম্পূর্ণ হলে:\n{"complete":false}';
 
   const fallbackExtract = () => {
     const text = (historyArr || []).map(m =>
@@ -45,7 +39,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
   };
 
   try {
-    const response = await fetch(\`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\${API_KEY}\`, {
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(API_KEY || ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -56,7 +50,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
     const raw = await response.text();
     if (!response.ok) {
-      console.error(\`extractOrderInfo Gemini HTTP \${response.status}: \${raw.slice(0, 500)}\`);
+      console.error('extractOrderInfo Gemini HTTP ' + response.status + ': ' + raw.slice(0, 500));
       return fallbackExtract();
     }
 
@@ -82,24 +76,22 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   const extractStart = source.indexOf('async function extractOrderInfo(historyArr) {');
   const extractEnd = source.indexOf('\n\nasync function saveOrderAndNotify', extractStart);
-  if (extractStart < 0 || extractEnd < 0) {
-    throw new Error('Order save reliability: extractOrderInfo block not found');
-  }
+  if (extractStart < 0 || extractEnd < 0) throw new Error('Order save reliability: extractOrderInfo block not found');
   source = source.slice(0, extractStart) + extractReplacement + source.slice(extractEnd);
 
-  const saveReplacement = `async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {
-  try {
+  const saveReplacement = 'async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {\n' +
+`  try {
     const result = await pool.query(
-      \`INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id\`,
+      'INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
       [agentId, orderInfo.customer_name, orderInfo.customer_address, orderInfo.customer_phone, orderInfo.order_details, String(chatId)]
     );
 
-    console.log(\`✓ Order saved: id=\${result.rows[0]?.id || 'unknown'} agent=\${agentId} chat=\${chatId}\`);
+    console.log('✓ Order saved: id=' + (result.rows[0]?.id || 'unknown') + ' agent=' + agentId + ' chat=' + chatId);
 
-    const notifyText = \`🛒 নতুন অর্ডার এসেছে! (\${notifyPlatform})\\n\\n👤 নাম: \${orderInfo.customer_name}\\n📍 ঠিকানা: \${orderInfo.customer_address}\\n📞 ফোন: \${orderInfo.customer_phone}\\n📦 বিবরণ: \${orderInfo.order_details}\`;
+    const notifyText = '🛒 নতুন অর্ডার এসেছে! (' + notifyPlatform + ')\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 বিবরণ: ' + orderInfo.order_details;
     const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
     if (myChatId && notifyToken) {
-      await fetch(\`https://api.telegram.org/bot\${notifyToken}/sendMessage\`, {
+      await fetch('https://api.telegram.org/bot' + notifyToken + '/sendMessage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: myChatId, text: notifyText })
@@ -114,9 +106,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   const saveStart = source.indexOf('async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {');
   const saveEnd = source.indexOf('\n\nasync function notifyOwnerViaAnyTelegramBot', saveStart);
-  if (saveStart < 0 || saveEnd < 0) {
-    throw new Error('Order save reliability: saveOrderAndNotify block not found');
-  }
+  if (saveStart < 0 || saveEnd < 0) throw new Error('Order save reliability: saveOrderAndNotify block not found');
   source = source.slice(0, saveStart) + saveReplacement + source.slice(saveEnd);
 
   const telegramOld = `bot.orderSaved[chatId] = true;
