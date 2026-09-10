@@ -80,11 +80,12 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
   }
 }`;
 
-  const extractPattern = /async function extractOrderInfo\\(historyArr\\) \\{[\\s\\S]*?\\n\\}\\n\\nasync function saveOrderAndNotify/;
-  if (!extractPattern.test(source)) {
+  const extractStart = source.indexOf('async function extractOrderInfo(historyArr) {');
+  const extractEnd = source.indexOf('\n\nasync function saveOrderAndNotify', extractStart);
+  if (extractStart < 0 || extractEnd < 0) {
     throw new Error('Order save reliability: extractOrderInfo block not found');
   }
-  source = source.replace(extractPattern, extractReplacement + '\\n\\nasync function saveOrderAndNotify');
+  source = source.slice(0, extractStart) + extractReplacement + source.slice(extractEnd);
 
   const saveReplacement = `async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {
   try {
@@ -111,22 +112,24 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
   }
 }`;
 
-  const savePattern = /async function saveOrderAndNotify\\(agentId, chatId, orderInfo, notifyPlatform, notifyToken\\) \\{[\\s\\S]*?\\n\\}\\n\\nasync function notifyOwnerViaAnyTelegramBot/;
-  if (!savePattern.test(source)) {
+  const saveStart = source.indexOf('async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {');
+  const saveEnd = source.indexOf('\n\nasync function notifyOwnerViaAnyTelegramBot', saveStart);
+  if (saveStart < 0 || saveEnd < 0) {
     throw new Error('Order save reliability: saveOrderAndNotify block not found');
   }
-  source = source.replace(savePattern, saveReplacement + '\\n\\nasync function notifyOwnerViaAnyTelegramBot');
+  source = source.slice(0, saveStart) + saveReplacement + source.slice(saveEnd);
 
-  // Only mark the conversation as saved after the DB insert succeeds.
-  source = source.replace(
-    /bot\\.orderSaved\\[chatId\\] = true;\\n\\s*await saveOrderAndNotify\\(bot\\.agentId, chatId, orderInfo, 'Telegram', token\\);/g,
-    `const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);\\n        if (saved) bot.orderSaved[chatId] = true;`
-  );
+  const telegramOld = `bot.orderSaved[chatId] = true;
+        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);`;
+  const telegramNew = `const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+        if (saved) bot.orderSaved[chatId] = true;`;
+  source = source.replace(telegramOld, telegramNew);
 
-  source = source.replace(
-    /page\\.orderSaved\\[senderId\\] = true;\\n\\s*await saveOrderAndNotify\\(page\\.agentId, senderId, orderInfo, 'Facebook Messenger', null\\);/g,
-    `const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);\\n            if (saved) { page.orderSaved[senderId] = true; }`
-  );
+  const facebookOld = `page.orderSaved[senderId] = true;
+            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);`;
+  const facebookNew = `const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
+            if (saved) page.orderSaved[senderId] = true;`;
+  source = source.replace(facebookOld, facebookNew);
 
   return module._compile(source, filename);
 };
