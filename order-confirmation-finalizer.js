@@ -72,7 +72,7 @@ Module._extensions['.js'] = function orderVerificationAccuracyLoader(module, fil
   // Do NOT classify general inquiries as orders. A real order must contain:
   // 1) a recognizable product, and 2) a quantity. Questions such as
   // "কি কি পণ্য আছে?" or "অর্ডার করতে চাই" alone are never order details.
-  const productPattern = /টি-?শার্ট|t-?shirt|গেঞ্জি|পাঞ্জাবি|শার্ট|প্যান্ট|জামা|কাপড়|কাপড়|জুতা|ব্যাগ|ছাতা|পণ্য/i;
+  const productPattern = /টি-?শার্ট|t-?shirt|গেঞ্জি|পাঞ্জাবি|শার্ট|প্যান্ট|জামা|কাপড়|কাপড়|জুতা|ব্যাগ|ছাতা/i;
   const quantityPattern = /(?:\\d+|[০-৯]+)\\s*(?:টা|টি|পিস|pcs|piece|pieces|জোড়া|জোড়া|pair|কপি)|(?:এক|দুই|তিন|চার|পাঁচ|ছয়|ছয়|সাত|আট|নয়|নয়|দশ)\\s*(?:টা|টি|পিস|জোড়া|জোড়া|কপি)?/i;
   const inquiryOnly = /^(?:অর্ডার করতে চাই|অর্ডার করতে চাই\\s*[।.!?]?|কি কি পণ্য আছে|কী কী পণ্য আছে|কি কি পণ্য আছে[?!.]|কী কী পণ্য আছে[?!.]|পণ্য কি কি আছে|পণ্যের লিস্ট দিন|প্রোডাক্ট কি কি আছে)[\\s?!.।]*$/i;
 
@@ -110,16 +110,104 @@ Module._extensions['.js'] = function orderVerificationAccuracyLoader(module, fil
 }`;
 
   const start = source.indexOf('async function extractOrderInfo(historyArr) {');
-  const end = source.indexOf('\\n\\nasync function saveOrderAndNotify', start);
-  if (start < 0 || end < 0) {
-    throw new Error('Order verification accuracy: extractOrderInfo block not found');
+  const saveAnchor = '\n\nasync function saveOrderAndNotify';
+  const savePos = source.indexOf(saveAnchor);
+
+  // The original server.js may not contain extractOrderInfo at all. In that
+  // case insert our authoritative extractor immediately before saveOrderAndNotify.
+  if (start < 0) {
+    if (savePos < 0) {
+      throw new Error('Order verification accuracy: saveOrderAndNotify anchor not found');
+    }
+    source = source.slice(0, savePos + 2) + replacement + '\n\n' + source.slice(savePos + 2);
+  } else {
+    const end = source.indexOf(saveAnchor, start);
+    if (end < 0) {
+      throw new Error('Order verification accuracy: extractOrderInfo end not found');
+    }
+    source = source.slice(0, start) + replacement + source.slice(end);
   }
 
-  source = source.slice(0, start) + replacement + source.slice(end);
+  // Add the same explicit confirmation helpers if the original server does not have them.
+  const confirmationHelper = `
+function customerCancelledOrder(historyArr) {
+  const messages = (historyArr || []).filter(m => m.role === 'user');
+  if (!messages.length) return false;
+  const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim();
+  return /^(না|না লাগবে না|বাতিল|ক্যানসেল|cancel|বাদ দিন|বাদ দেন|অর্ডার করবেন না)$/i.test(latest);
+}
 
-  // IMPORTANT: do not modify the save/confirmation gates here.
-  // order-save-reliability.js must remain authoritative: an order is saved only
-  // after the customer explicitly confirms it.
+function customerConfirmedOrder(historyArr) {
+  const messages = (historyArr || []).filter(m => m.role === 'user');
+  if (!messages.length) return false;
+  const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim();
+  if (!latest || customerCancelledOrder(historyArr)) return false;
+  return /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)([\\s,।.!?]|$)/i.test(latest);
+}
+
+function buildOrderConfirmationReply(orderInfo) {
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
+}
+`;
+
+  if (!source.includes('function customerConfirmedOrder(historyArr)')) {
+    const anchor = 'const telegramBots = {};';
+    const pos = source.indexOf(anchor);
+    if (pos < 0) throw new Error('Order confirmation patch: helper anchor not found');
+    source = source.slice(0, pos) + confirmationHelper + '\n' + source.slice(pos);
+  }
+
+  const replyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
+  const telegramReply = `${replyAnchor}
+    const telegramOrderDraft = await extractOrderInfo(bot.histories[chatId]);
+    if (telegramOrderDraft.complete && !customerConfirmedOrder(bot.histories[chatId]) && !customerCancelledOrder(bot.histories[chatId])) {
+      reply = buildOrderConfirmationReply(telegramOrderDraft);
+    }`;
+  const firstReplyPos = source.indexOf(replyAnchor);
+  if (firstReplyPos < 0) throw new Error('Order confirmation patch: Telegram reply anchor not found');
+  source = source.slice(0, firstReplyPos) + telegramReply + source.slice(firstReplyPos + replyAnchor.length);
+
+  const secondReplyPos = source.indexOf(replyAnchor, firstReplyPos + telegramReply.length);
+  if (secondReplyPos < 0) throw new Error('Order confirmation patch: Facebook reply anchor not found');
+  const facebookReply = `${replyAnchor}
+        const facebookOrderDraft = await extractOrderInfo(page.histories[senderId]);
+        if (facebookOrderDraft.complete && !customerConfirmedOrder(page.histories[senderId]) && !customerCancelledOrder(page.histories[senderId])) {
+          reply = buildOrderConfirmationReply(facebookOrderDraft);
+        }`;
+  source = source.slice(0, secondReplyPos) + facebookReply + source.slice(secondReplyPos + replyAnchor.length);
+
+  // Saving is now gated ONLY by explicit customer confirmation.
+  source = source.replace(
+    `if (!bot.orderSaved[chatId] && hasPhoneNumber) {
+      const orderInfo = await extractOrderInfo(bot.histories[chatId]);
+      if (orderInfo.complete) {
+        bot.orderSaved[chatId] = true;
+        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+      }
+    }`,
+    `if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId])) {
+      const orderInfo = await extractOrderInfo(bot.histories[chatId]);
+      if (orderInfo.complete) {
+        const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+        if (saved) bot.orderSaved[chatId] = true;
+      }
+    }`
+  );
+
+  source = source.replace(
+    `if (!page.orderSaved[senderId] && hasPhoneNumber) {
+          const orderInfo = await extractOrderInfo(page.histories[senderId]);
+          if (orderInfo.complete) {
+            page.orderSaved[senderId] = true;
+            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
+            await notifyOwnerViaAnyTelegramBot(`,
+    `if (!page.orderSaved[senderId] && customerConfirmedOrder(page.histories[senderId])) {
+          const orderInfo = await extractOrderInfo(page.histories[senderId]);
+          if (orderInfo.complete) {
+            const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
+            if (saved) page.orderSaved[senderId] = true;
+            await notifyOwnerViaAnyTelegramBot(`
+  );
 
   return module._compile(source, filename);
 };
