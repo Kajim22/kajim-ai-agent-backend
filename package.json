@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node -r ./conversations-inbox.js -r ./customer-dashboard-api.js -r ./customer-profile-memory.js -r ./knowledge-retrieval-runtime.js -r ./knowledge-retrieval.js -r ./advanced-kb-backward-compatible.js -r ./customer-memory-order-hardening.js -r ./facebook-runtime-hardening.js -r ./gemini-model-alias.js -r ./facebook-webhook-alias.js server.js"
+    "start": "node -r ./smart-order-dashboard-api.js -r ./conversations-inbox.js -r ./customer-dashboard-api.js -r ./customer-profile-memory.js -r ./knowledge-retrieval-runtime.js -r ./knowledge-retrieval.js -r ./advanced-kb-backward-compatible.js -r ./customer-memory-order-hardening.js -r ./facebook-runtime-hardening.js -r ./gemini-model-alias.js -r ./facebook-webhook-alias.js server.js"
   },
   "dependencies": {
     "pg": "^8.11.3",
