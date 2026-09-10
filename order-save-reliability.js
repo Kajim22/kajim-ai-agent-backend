@@ -13,7 +13,8 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
   const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
 `  const API_KEY = process.env.GEMINI_API_KEY;
 
-  // Deterministic extraction is attempted first so confirmed orders do not depend on Gemini quota.
+  // Deterministic extraction first. This is also what the confirmation prompt uses,
+  // so an order draft never depends on Gemini quota.
   const fallbackExtract = () => {
     const messages = (historyArr || []).filter(m => m.role === 'user');
     const text = messages.map(m =>
@@ -74,9 +75,13 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
     };
   };
 
-  // Gemini is only an enhancement. A quota/429/network failure must never block a confirmed order.
+  const deterministic = fallbackExtract();
+  if (deterministic.complete) return deterministic;
+
+  // Gemini is only an enhancement when deterministic extraction is incomplete.
+  // A quota/429/network failure must never block a confirmed order.
   try {
-    if (!API_KEY) return fallbackExtract();
+    if (!API_KEY) return deterministic;
 
     const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে শুধু গ্রাহকের দেওয়া নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। বটের নিজের প্রশ্ন বা উত্তরকে গ্রাহকের তথ্য হিসেবে কখনো নিও না। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
 
@@ -160,6 +165,10 @@ function customerConfirmedOrder(historyArr) {
   if (/cancel|ক্যানসেল|বাতিল|লাগবে না|বাদ দিন|বাদ দেন|না,? ?লাগবে না|অর্ডার করবেন না/.test(latest)) return false;
   return /(^|[\\s,।.!?])(?:হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন|নিশ্চিত|নিশ্চিত করছি|হ্যাঁ অর্ডার করুন|জি অর্ডার করুন)(?=$|[\\s,।.!?])/i.test(latest);
 }
+
+function buildOrderConfirmationReply(orderInfo) {
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি। নাম: ' + orderInfo.customer_name + ' | ঠিকানা: ' + orderInfo.customer_address + ' | ফোন: ' + orderInfo.customer_phone + '। অর্ডারটি কনফার্ম করতে দয়া করে “জি, অর্ডার করুন” বা “কনফার্ম” লিখুন।';
+}
 `;
   const helperAnchor = 'const telegramBots = {};';
   if (!source.includes('function customerConfirmedOrder(historyArr)')) {
@@ -167,6 +176,25 @@ function customerConfirmedOrder(historyArr) {
     if (helperPos < 0) throw new Error('Order save reliability: telegramBots anchor not found');
     source = source.slice(0, helperPos) + confirmationHelper + '\n' + source.slice(helperPos);
   }
+
+  // Before sending the normal AI reply, detect a complete order draft. If the
+  // latest customer message is not an explicit confirmation, replace the AI
+  // reply with a clear confirmation request. No order is saved at this stage.
+  const telegramReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
+  const telegramReplyReplacement = `${telegramReplyAnchor}
+    const orderDraft = await extractOrderInfo(bot.histories[chatId]);
+    if (orderDraft.complete && !customerConfirmedOrder(bot.histories[chatId])) {
+      reply = buildOrderConfirmationReply(orderDraft);
+    }`;
+  source = source.replace(telegramReplyAnchor, telegramReplyReplacement);
+
+  const facebookReplyAnchor = `let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";`;
+  const facebookReplyReplacement = `${facebookReplyAnchor}
+        const orderDraft = await extractOrderInfo(page.histories[senderId]);
+        if (orderDraft.complete && !customerConfirmedOrder(page.histories[senderId])) {
+          reply = buildOrderConfirmationReply(orderDraft);
+        }`;
+  source = source.replace(facebookReplyAnchor, facebookReplyReplacement);
 
   const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
