@@ -1,7 +1,15 @@
-// Smart Order Dashboard API — additive, agent-scoped order management.
+// Smart Orders Dashboard API — additive, agent-scoped order management.
 const express = require('express');
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
+// These routes are preloaded before server.js registers its global CORS middleware.
+// Set CORS headers here too, otherwise browsers may report a generic "Failed to fetch".
+function allowCors(res){
+  res.setHeader('Access-Control-Allow-Origin','*');
+  res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type');
+}
 
 async function ensureOrderStatusColumn(){
   try{
@@ -12,6 +20,7 @@ async function ensureOrderStatusColumn(){
 ensureOrderStatusColumn();
 
 express.application.get.call(express.application,'/orders/dashboard/:agentId',async(req,res)=>{
+  allowCors(res);
   try{
     const agentId=String(req.params.agentId||'').trim();
     if(!agentId)return res.json({success:false,error:'agentId প্রয়োজন'});
@@ -19,10 +28,19 @@ express.application.get.call(express.application,'/orders/dashboard/:agentId',as
     const summary={new:0,confirmed:0,processing:0,delivered:0,cancelled:0,total:r.rows.length};
     r.rows.forEach(o=>{const s=String(o.status||'new').toLowerCase();if(Object.prototype.hasOwnProperty.call(summary,s))summary[s]++;});
     res.json({success:true,summary,orders:r.rows});
-  }catch(e){res.json({success:false,error:e.message});}
+  }catch(e){
+    console.error('Smart Order dashboard error:',e.message);
+    res.json({success:false,error:e.message});
+  }
+});
+
+express.application.options.call(express.application,'/orders/status',async(req,res)=>{
+  allowCors(res);
+  res.sendStatus(204);
 });
 
 express.application.post.call(express.application,'/orders/status',async(req,res)=>{
+  allowCors(res);
   try{
     const id=Number(req.body?.id), agentId=String(req.body?.agentId||'').trim();
     const allowed=['new','confirmed','processing','delivered','cancelled'];
@@ -31,5 +49,8 @@ express.application.post.call(express.application,'/orders/status',async(req,res
     const r=await pool.query(`UPDATE orders SET status=$1 WHERE id=$2 AND agent_id=$3 RETURNING id,status`,[status,id,agentId]);
     if(!r.rowCount)return res.json({success:false,error:'Order পাওয়া যায়নি'});
     res.json({success:true,order:r.rows[0]});
-  }catch(e){res.json({success:false,error:e.message});}
+  }catch(e){
+    console.error('Smart Order status error:',e.message);
+    res.json({success:false,error:e.message});
+  }
 });
