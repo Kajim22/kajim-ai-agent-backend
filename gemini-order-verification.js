@@ -59,9 +59,13 @@ complete হলে: {"complete":true,"customer_name":"...","customer_address":".
     const address = String(parsed.customer_address || '').trim();
     const details = String(parsed.order_details || '').trim();
     const phone = String(parsed.customer_phone || '').replace(/[\s-]/g, '');
-    const normalizedPhone = phone.replace(/^\+88/, '').replace(/^88(?=01)/, '');
 
-    if (!name || !address || !details || !/^01[3-9]\d{8}$/.test(normalizedPhone)) {
+    // Avoid regex escaping entirely here: normalize +88/88 prefixes safely.
+    let normalizedPhone = phone;
+    if (normalizedPhone.startsWith('+88')) normalizedPhone = normalizedPhone.slice(3);
+    else if (normalizedPhone.startsWith('88') && normalizedPhone.slice(2).startsWith('01')) normalizedPhone = normalizedPhone.slice(2);
+
+    if (!name || !address || !details || !/^01[3-9][0-9]{8}$/.test(normalizedPhone)) {
       return { complete: false };
     }
 
