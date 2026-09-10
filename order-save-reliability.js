@@ -1,5 +1,4 @@
-// Make order extraction independent of fragile JSON-mode/model combinations
-// and make the order insert report success before the in-memory flag is set.
+// Reliable order extraction/save patch. Loaded as a server.js source transformer.
 const fs = require('fs');
 const Module = require('module');
 const path = require('path');
@@ -13,7 +12,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
 `  const API_KEY = process.env.GEMINI_API_KEY;
-  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। নিচের কথোপকথন থেকে গ্রাহকের অর্ডারের নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো।\n\nশুধু valid JSON object দাও। কোনো markdown, ব্যাখ্যা বা অতিরিক্ত লেখা দেবে না।\nসম্পূর্ণ হলে:\n{"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের সংক্ষিপ্ত বিবরণ"}\nঅসম্পূর্ণ হলে:\n{"complete":false}';
+  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে গ্রাহকের নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
 
   const fallbackExtract = () => {
     const text = (historyArr || []).map(m =>
@@ -87,7 +86,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
     console.log('✓ Order saved: id=' + (result.rows[0]?.id || 'unknown') + ' agent=' + agentId + ' chat=' + chatId);
 
-    const notifyText = '🛒 নতুন অর্ডার এসেছে! (' + notifyPlatform + ')\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 বিবরণ: ' + orderInfo.order_details;
+    const notifyText = '🛒 নতুন অর্ডার এসেছে! (' + notifyPlatform + ') | নাম: ' + orderInfo.customer_name + ' | ঠিকানা: ' + orderInfo.customer_address + ' | ফোন: ' + orderInfo.customer_phone + ' | বিবরণ: ' + orderInfo.order_details;
     const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
     if (myChatId && notifyToken) {
       await fetch('https://api.telegram.org/bot' + notifyToken + '/sendMessage', {
