@@ -125,15 +125,15 @@ function customerConfirmedOrder(historyArr) {
     source = source.slice(0, helperPos) + confirmationHelper + '\n' + source.slice(helperPos);
   }
 
-  const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber) {
+  const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
-  const telegramNew = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
+  const telegramNew = `if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId])) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
   source = source.replace(telegramOld, telegramNew);
 
-  const facebookOld = `if (!page.orderSaved[senderId] && hasPhoneNumber) {
+  const facebookOld = `if (!page.orderSaved[senderId] && hasPhoneNumber && customerConfirmedOrder(page.histories[senderId])) {
           const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
-  const facebookNew = `if (!page.orderSaved[senderId] && hasPhoneNumber && customerConfirmedOrder(page.histories[senderId])) {
+  const facebookNew = `if (!page.orderSaved[senderId] && customerConfirmedOrder(page.histories[senderId])) {
           const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
   source = source.replace(facebookOld, facebookNew);
 
