@@ -49,7 +49,7 @@ complete হলে: {"complete":true,"customer_name":"...","customer_address":".
     const data = await res.json();
     if (!res.ok || data?.error) return { complete: false };
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const match = text.match(/\\{[\\s\\S]*\\}/);
+    const match = text.match(/\{[\s\S]*\}/);
     if (!match) return { complete: false };
 
     const parsed = JSON.parse(match[0]);
@@ -58,10 +58,10 @@ complete হলে: {"complete":true,"customer_name":"...","customer_address":".
     const name = String(parsed.customer_name || '').trim();
     const address = String(parsed.customer_address || '').trim();
     const details = String(parsed.order_details || '').trim();
-    const phone = String(parsed.customer_phone || '').replace(/[\\s-]/g, '');
-    const normalizedPhone = phone.replace(/^\\+88/, '').replace(/^88(?=01)/, '');
+    const phone = String(parsed.customer_phone || '').replace(/[\s-]/g, '');
+    const normalizedPhone = phone.replace(/^\+88/, '').replace(/^88(?=01)/, '');
 
-    if (!name || !address || !details || !/^01[3-9]\\d{8}$/.test(normalizedPhone)) {
+    if (!name || !address || !details || !/^01[3-9]\d{8}$/.test(normalizedPhone)) {
       return { complete: false };
     }
 
