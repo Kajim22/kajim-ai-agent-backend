@@ -12,10 +12,10 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
 `  const API_KEY = process.env.GEMINI_API_KEY;
-  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে গ্রাহকের নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
+  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে শুধু গ্রাহকের দেওয়া নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। বটের নিজের প্রশ্ন বা উত্তরকে গ্রাহকের তথ্য হিসেবে কখনো নিও না। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
 
   const fallbackExtract = () => {
-    const text = (historyArr || []).map(m =>
+    const text = (historyArr || []).filter(m => m.role === 'user').map(m =>
       (m.parts || []).map(p => p.text || '').join(' ')
     ).join(' ');
     const normalized = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
@@ -107,17 +107,47 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
   if (saveStart < 0 || saveEnd < 0) throw new Error('Order save reliability: saveOrderAndNotify block not found');
   source = source.slice(0, saveStart) + saveReplacement + source.slice(saveEnd);
 
-  const telegramOld = `bot.orderSaved[chatId] = true;
-        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);`;
-  const telegramNew = `const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
-        if (saved) bot.orderSaved[chatId] = true;`;
+  const confirmationHelper = `
+// Save an order only after the customer explicitly confirms it.
+function customerConfirmedOrder(historyArr) {
+  const messages = (historyArr || []).filter(m => m.role === 'user');
+  if (!messages.length) return false;
+  const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim().toLowerCase();
+  if (!latest) return false;
+  if (/cancel|ক্যানসেল|বাতিল|লাগবে না|বাদ দিন|বাদ দেন|না,? ?লাগবে না|অর্ডার করবেন না/.test(latest)) return false;
+  return /(^|[\\s,।.!?])(?:হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|অর্ডার দিন|অর্ডার করুন|নিশ্চিত|নিশ্চিত করছি|হ্যাঁ অর্ডার করুন|জি অর্ডার করুন)(?=$|[\\s,।.!?])/i.test(latest);
+}
+`;
+  const helperAnchor = 'const telegramBots = {};';
+  if (!source.includes('function customerConfirmedOrder(historyArr)')) {
+    const helperPos = source.indexOf(helperAnchor);
+    if (helperPos < 0) throw new Error('Order save reliability: telegramBots anchor not found');
+    source = source.slice(0, helperPos) + confirmationHelper + '\n' + source.slice(helperPos);
+  }
+
+  const telegramOld = `if (!bot.orderSaved[chatId] && hasPhoneNumber) {
+      const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
+  const telegramNew = `if (!bot.orderSaved[chatId] && hasPhoneNumber && customerConfirmedOrder(bot.histories[chatId])) {
+      const orderInfo = await extractOrderInfo(bot.histories[chatId]);`;
   source = source.replace(telegramOld, telegramNew);
 
-  const facebookOld = `page.orderSaved[senderId] = true;
-            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);`;
-  const facebookNew = `const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
-            if (saved) page.orderSaved[senderId] = true;`;
+  const facebookOld = `if (!page.orderSaved[senderId] && hasPhoneNumber) {
+          const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
+  const facebookNew = `if (!page.orderSaved[senderId] && hasPhoneNumber && customerConfirmedOrder(page.histories[senderId])) {
+          const orderInfo = await extractOrderInfo(page.histories[senderId]);`;
   source = source.replace(facebookOld, facebookNew);
+
+  const telegramSavedOld = `bot.orderSaved[chatId] = true;
+        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);`;
+  const telegramSavedNew = `const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+        if (saved) bot.orderSaved[chatId] = true;`;
+  source = source.replace(telegramSavedOld, telegramSavedNew);
+
+  const facebookSavedOld = `page.orderSaved[senderId] = true;
+            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);`;
+  const facebookSavedNew = `const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
+            if (saved) page.orderSaved[senderId] = true;`;
+  source = source.replace(facebookSavedOld, facebookSavedNew);
 
   return module._compile(source, filename);
 };
