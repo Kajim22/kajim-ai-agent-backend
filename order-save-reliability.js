@@ -12,10 +12,11 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
   const extractReplacement = 'async function extractOrderInfo(historyArr) {\n' +
 `  const API_KEY = process.env.GEMINI_API_KEY;
-  const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে শুধু গ্রাহকের দেওয়া নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। বটের নিজের প্রশ্ন বা উত্তরকে গ্রাহকের তথ্য হিসেবে কখনো নিও না। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
 
+  // Deterministic extraction is attempted first so confirmed orders do not depend on Gemini quota.
   const fallbackExtract = () => {
-    const text = (historyArr || []).filter(m => m.role === 'user').map(m =>
+    const messages = (historyArr || []).filter(m => m.role === 'user');
+    const text = messages.map(m =>
       (m.parts || []).map(p => p.text || '').join(' ')
     ).join(' ');
     const normalized = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
@@ -23,27 +24,69 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
     if (!phoneMatch) return { complete: false };
 
     const phone = phoneMatch[0].replace(/^88/, '');
-    const nameMatch = text.match(/(?:নাম|name)\\s*[:：-]?\\s*([^,\\n।]+)/i);
-    const addressMatch = text.match(/(?:ঠিকানা|address|এড্রেস)\\s*[:：-]?\\s*([^\\n।]+)/i);
-    const orderMatch = text.match(/(?:অর্ডার|order|পণ্য|product)\\s*[:：-]?\\s*([^\\n।]+)/i);
-    if (!nameMatch || !addressMatch) return { complete: false };
+
+    let name = '';
+    const namePatterns = [
+      /(?:নাম|name)\\s*[:：-]?\\s*([^,\\n।]+)/i,
+      /(?:আমার নাম|my name is)\\s*[:：-]?\\s*([^,\\n।]+)/i,
+      /(?:আমি|i am)\\s+([^,\\n।]{2,40})/i
+    ];
+    for (const pattern of namePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        name = match[1].trim();
+        break;
+      }
+    }
+
+    let address = '';
+    const addressPatterns = [
+      /(?:ঠিকানা|address|এড্রেস)\\s*[:：-]?\\s*([^\\n।]+)/i,
+      /(?:থাকি|বাসা|বাড়ি|বাড়ি|বাসস্থান)\\s*[:：-]?\\s*([^\\n।]+)/i
+    ];
+    for (const pattern of addressPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        address = match[1].trim();
+        break;
+      }
+    }
+
+    const productKeywords = /টি-?শার্ট|t-?shirt|গেঞ্জি|পাঞ্জাবি|শার্ট|প্যান্ট|জামা|কাপড়|কাপড়|জুতা|ব্যাগ|ছাতা|product|পণ্য|অর্ডার/i;
+    let orderDetails = '';
+    for (const message of messages) {
+      const messageText = (message.parts || []).map(p => p.text || '').join(' ').trim();
+      if (messageText && productKeywords.test(messageText) && !/^(হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|confirm|confirmed)$/i.test(messageText)) {
+        orderDetails = messageText;
+      }
+    }
+
+    if (!name) name = 'গ্রাহক';
+    if (!address) return { complete: false };
+    if (!orderDetails) orderDetails = 'Confirmed order';
 
     return {
       complete: true,
-      customer_name: nameMatch[1].trim(),
-      customer_address: addressMatch[1].trim(),
+      customer_name: name,
+      customer_address: address,
       customer_phone: phone,
-      order_details: (orderMatch && orderMatch[1].trim()) || 'অর্ডার'
+      order_details: orderDetails
     };
   };
 
+  // Gemini is only an enhancement. A quota/429/network failure must never block a confirmed order.
   try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(API_KEY || ''), {
+    if (!API_KEY) return fallbackExtract();
+
+    const extractPrompt = 'তুমি একটি অর্ডার তথ্য বের করার টুল। কথোপকথন থেকে শুধু গ্রাহকের দেওয়া নাম, ঠিকানা, ফোন ও পণ্যের বিবরণ বের করো। বটের নিজের প্রশ্ন বা উত্তরকে গ্রাহকের তথ্য হিসেবে কখনো নিও না। শুধু valid JSON object দাও: {"complete":true,"customer_name":"নাম","customer_address":"ঠিকানা","customer_phone":"ফোন","order_details":"পণ্যের বিবরণ"} অথবা {"complete":false}';
+
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(API_KEY), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: extractPrompt }] },
-        contents: historyArr
+        contents: historyArr,
+        generationConfig: { responseMimeType: 'application/json' }
       })
     });
 
@@ -61,7 +104,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
     try {
       const parsed = JSON.parse(match[0]);
-      if (parsed && parsed.complete === true && parsed.customer_phone) return parsed;
+      if (parsed && parsed.complete === true && parsed.customer_phone && parsed.customer_address) return parsed;
       return fallbackExtract();
     } catch (_) {
       return fallbackExtract();
@@ -115,7 +158,7 @@ function customerConfirmedOrder(historyArr) {
   const latest = (messages[messages.length - 1].parts || []).map(p => p.text || '').join(' ').trim().toLowerCase();
   if (!latest) return false;
   if (/cancel|ক্যানসেল|বাতিল|লাগবে না|বাদ দিন|বাদ দেন|না,? ?লাগবে না|অর্ডার করবেন না/.test(latest)) return false;
-  return /(^|[\\s,।.!?])(?:হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|অর্ডার দিন|অর্ডার করুন|নিশ্চিত|নিশ্চিত করছি|হ্যাঁ অর্ডার করুন|জি অর্ডার করুন)(?=$|[\\s,।.!?])/i.test(latest);
+  return /(^|[\\s,।.!?])(?:হ্যাঁ|জি|জ্বি|ঠিক আছে|ঠিক|কনফার্ম|কনফার্ম করুন|confirm|confirmed|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন|নিশ্চিত|নিশ্চিত করছি|হ্যাঁ অর্ডার করুন|জি অর্ডার করুন)(?=$|[\\s,।.!?])/i.test(latest);
 }
 `;
   const helperAnchor = 'const telegramBots = {};';
