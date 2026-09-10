@@ -74,15 +74,13 @@ Module._extensions['.js'] = function orderConfirmationFinalizerLoader(module, fi
 }`;
 
   const start = source.indexOf('async function extractOrderInfo(historyArr) {');
-  const end = source.indexOf('\\n\\nasync function saveOrderAndNotify', start);
+  const end = source.indexOf('\n\nasync function saveOrderAndNotify', start);
   if (start < 0 || end < 0) {
     throw new Error('Order confirmation finalizer: extractOrderInfo block not found');
   }
 
   source = source.slice(0, start) + replacement + source.slice(end);
 
-  // Extra guard: even if an older transformer failed to remove its phone gate,
-  // saving is allowed only after explicit customer confirmation.
   source = source.replace(
     /if \(!bot\.orderSaved\[chatId\] && hasPhoneNumber && customerConfirmedOrder\(bot\.histories\[chatId\]\)\)/g,
     'if (!bot.orderSaved[chatId] && customerConfirmedOrder(bot.histories[chatId]))'
