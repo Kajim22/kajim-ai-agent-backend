@@ -56,8 +56,7 @@ Module._extensions['.js'] = function orderSaveReliabilityLoader(module, filename
 
     let data;
     try { data = JSON.parse(raw); } catch (_) { return fallbackExtract(); }
-    let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    text = text.replace(/```json|```/g, '').trim();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const match = text.match(/\\{[\\s\\S]*\\}/);
     if (!match) return fallbackExtract();
 
