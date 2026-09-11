@@ -11,9 +11,6 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
   let source = fs.readFileSync(filename, 'utf8');
 
-  // Make the existing save function reliable for both Telegram and Messenger.
-  // Messenger passes notifyToken=null, so use the first already-connected
-  // Telegram bot token from the existing telegram_bots table.
   const saveStart = source.indexOf('async function saveOrderAndNotify(');
   const saveEnd = source.indexOf('\nasync function notifyOwnerViaAnyTelegramBot', saveStart);
   if (saveStart < 0 || saveEnd < 0) {
@@ -70,7 +67,6 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
   source = source.slice(0, saveStart) + reliableSaveFunction + source.slice(saveEnd);
 
-  // Facebook confirmation helper.
   const helper = `
 function buildOrderConfirmationReply(orderInfo) {
   return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
@@ -92,7 +88,7 @@ function buildOrderConfirmationReply(orderInfo) {
         if (!page.pendingOrderDrafts) page.pendingOrderDrafts = {};
         const finalOrderText = String(text || '').trim();
         const finalNormalized = finalOrderText.toLowerCase()
-          .replace(/[“”"'`]/g, '')
+          .replace(/[“”"'\\x60]/g, '')
           .replace(/[\\s,،।.!?;:؛ঃ\\-_/\\\\]+/g, '');
         const finalConfirmed = /^(হ্যাঁ|হ্যা|হা|জি|জ্বি|জী|জ্বী|ঠিকআছে|কনফার্ম|কনফার্মকরুন|নিশ্চিত|নিশ্চিতকরছি|অর্ডারদিন|অর্ডারকরুন|অর্ডারটাকরেদিন|করেদিন|করেদেন|confirm|confirmed|yes|ok|okay)$/.test(finalNormalized);
 
@@ -114,7 +110,6 @@ function buildOrderConfirmationReply(orderInfo) {
     source = source.slice(0, replyPos + replyAnchor.length) + confirmationGuard + source.slice(replyPos + replyAnchor.length);
   }
 
-  // Replace the old Facebook phone-only save trigger with a strict confirmation gate.
   const oldFacebookSave = `        const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
         const cleanedText = banglaToEnglishDigits.replace(/[\\s-]/g, '');
         const hasPhoneNumber = /\\d{10,11}/.test(cleanedText);
