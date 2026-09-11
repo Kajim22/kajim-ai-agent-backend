@@ -19,7 +19,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
   // confirmation-reply helper in this final loader itself.
   const helper = `
 function buildOrderConfirmationReply(orderInfo) {
-  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি.\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
 }
 `;
   const helperAnchor = 'const telegramBots = {};';
@@ -44,20 +44,10 @@ function buildOrderConfirmationReply(orderInfo) {
 `;
   source = source.slice(0, replyPos + replyAnchor.length) + guard + source.slice(replyPos + replyAnchor.length);
 
-  const gateStart = source.indexOf('const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));', webhookPos);
-  if (gateStart < 0) throw new Error('Final order runtime: Facebook save gate not found');
-  const gateEnd = source.indexOf('\\n      } catch (err) {', gateStart);
-  if (gateEnd < 0) throw new Error('Final order runtime: Facebook save gate end not found');
-
-  const finalGate = `const finalFacebookDraft = await extractOrderInfo(page.histories[senderId]);
-        const finalFacebookConfirmed = /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)[\\s,।.!?]*$/i.test(String(text || '').trim());
-        console.log('Order gate FB final:', JSON.stringify({ complete: finalFacebookDraft.complete, confirmed: finalFacebookConfirmed, chatId: senderId }));
-        if (!page.orderSaved[senderId] && finalFacebookConfirmed && finalFacebookDraft.complete) {
-          const saved = await saveOrderAndNotify(page.agentId, senderId, finalFacebookDraft, 'Facebook Messenger', null);
-          console.log('Order save result FB final:', saved);
-          if (saved) page.orderSaved[senderId] = true;
-        }`;
-  source = source.slice(0, gateStart) + finalGate + source.slice(gateEnd);
+  // Do not replace the existing save gate here. The earlier order-save-reliability
+  // layer already enforces explicit customer confirmation before saving. This
+  // final runtime only controls the reply shown to the customer, avoiding a
+  // brittle source-boundary dependency that can break deployment.
 
   console.log('✓ Final order confirmation runtime guard active');
   return module._compile(source, filename);
