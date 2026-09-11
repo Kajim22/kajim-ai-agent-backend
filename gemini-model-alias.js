@@ -15,6 +15,7 @@ const MAX_RETRIES = 1;
 const RETRY_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 6500;
 const MODEL_COOLDOWN_MS = 30000;
+const MAX_ERROR_BODY_LOG = 2000;
 
 const unhealthyUntil = new Map();
 
@@ -90,6 +91,17 @@ function buildInitWithTimeout(init) {
   return nextInit;
 }
 
+async function logGeminiErrorBody(response, label) {
+  if (!response || response.status !== 400) return;
+  try {
+    const body = await response.clone().text();
+    const safeBody = body.replace(/(key=)[^&\s]+/gi, '$1[REDACTED]');
+    console.error(`✗ Gemini ${label} HTTP 400 body: ${safeBody.slice(0, MAX_ERROR_BODY_LOG)}`);
+  } catch (error) {
+    console.error(`⚠ Gemini ${label} HTTP 400 body could not be read: ${error.message}`);
+  }
+}
+
 async function fetchWithFastRetry(input, init, label) {
   let lastResponse;
 
@@ -104,6 +116,11 @@ async function fetchWithFastRetry(input, init, label) {
     try {
       const response = await originalFetch.call(this, input, buildInitWithTimeout(init));
       lastResponse = response;
+
+      if (response.status === 400) {
+        await logGeminiErrorBody(response, label);
+        return response;
+      }
 
       if (response.status === 429) {
         markUnhealthy(label, 429);
@@ -138,8 +155,6 @@ function buildGeminiFailureResponse(message) {
     });
   }
 
-  // Node runtimes with no global Response should still return a fetch-like object
-  // so existing callers can safely inspect .ok/.status/.json().
   return {
     ok: false,
     status: 503,
