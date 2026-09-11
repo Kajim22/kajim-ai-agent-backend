@@ -46,7 +46,6 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
   const webhookPos = source.indexOf('app.post("/webhook/facebook"');
   if (webhookPos < 0) throw new Error('Final order runtime: Facebook webhook not found');
 
-  // Put confirmation state at the same scope as the Facebook save block.
   const tryAnchor = '      try {\n        const knowledgeText = await getKnowledgeText(page.agentId);';
   const tryPos = source.indexOf(tryAnchor, webhookPos);
   if (tryPos < 0) throw new Error('Final order runtime: Facebook try anchor not found');
@@ -74,8 +73,8 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
   const oldStart = source.indexOf('        const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));', webhookPos);
   const oldIf = source.indexOf('        if (!page.orderSaved[senderId] && hasPhoneNumber) {', oldStart);
-  const oldEnd = source.indexOf('\n        }\n      } catch (err) {', oldIf);
-  if (oldStart < 0 || oldIf < 0 || oldEnd < 0) throw new Error('Final order runtime: Facebook save block not found');
+  const catchMarker = source.indexOf('\n      } catch (err) {', oldIf);
+  if (oldStart < 0 || oldIf < 0 || catchMarker < 0) throw new Error('Final order runtime: Facebook save block not found');
 
   const replacement = `        if (!page.orderSaved[senderId] && finalConfirmed && finalOrderDraft?.complete) {
           page.orderSaved[senderId] = true;
@@ -84,8 +83,9 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
           console.log(\`✓ Confirmed Messenger order saved and notified: chat_id=\${senderId}\`);
         } else if (!page.orderSaved[senderId] && finalOrderDraft?.complete && !finalConfirmed) {
           console.log(\`⏳ Waiting for Messenger confirmation: chat_id=\${senderId}\`);
-        }`;
-  source = source.slice(0, oldStart) + replacement + source.slice(oldEnd);
+        }
+`;
+  source = source.slice(0, oldStart) + replacement + source.slice(catchMarker + 1);
 
   console.log('✓ Final Messenger confirmation/save/notification runtime active');
   return module._compile(source, filename);
