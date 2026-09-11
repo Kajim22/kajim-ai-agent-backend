@@ -12,7 +12,7 @@ const GEMINI_LITE_PATH = '/models/gemini-3.5-flash-lite:generateContent';
 
 const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
 const MAX_RETRIES = 1;
-const RETRY_DELAY_MS = 250;
+const RETRY_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 6500;
 const MODEL_COOLDOWN_MS = 30000;
 
@@ -95,8 +95,10 @@ async function fetchWithFastRetry(input, init, label) {
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
     if (attempt > 0) {
-      console.warn(`↻ Gemini ${label} quick retry after ${RETRY_DELAY_MS}ms`);
-      await sleep(RETRY_DELAY_MS);
+      const jitterMs = Math.floor(Math.random() * 250);
+      const delayMs = RETRY_DELAY_MS + jitterMs;
+      console.warn(`↻ Gemini ${label} retry after ${delayMs}ms`);
+      await sleep(delayMs);
     }
 
     try {
@@ -119,6 +121,32 @@ async function fetchWithFastRetry(input, init, label) {
   }
 
   return lastResponse;
+}
+
+function buildGeminiFailureResponse(message) {
+  const payload = JSON.stringify({
+    error: {
+      message: message || 'Gemini provider temporarily unavailable',
+      status: 'UNAVAILABLE'
+    }
+  });
+
+  if (typeof Response === 'function') {
+    return new Response(payload, {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // Node runtimes with no global Response should still return a fetch-like object
+  // so existing callers can safely inspect .ok/.status/.json().
+  return {
+    ok: false,
+    status: 503,
+    statusText: 'Service Unavailable',
+    json: async () => JSON.parse(payload),
+    text: async () => payload
+  };
 }
 
 if (typeof originalFetch === 'function') {
@@ -166,10 +194,10 @@ if (typeof originalFetch === 'function') {
     }
 
     if (!attemptedAny) {
-      console.warn('⏭ All Gemini models are cooling down; returning final provider response without another API burst');
+      console.warn('⏭ All Gemini models are cooling down; returning safe provider response without another API burst');
     }
 
-    console.error('✗ All Gemini models exhausted; returning final provider response');
-    return lastResponse;
+    console.error('✗ All Gemini models exhausted; returning safe 503 provider response');
+    return lastResponse || buildGeminiFailureResponse('Gemini is temporarily unavailable. Please try again shortly.');
   };
 }
