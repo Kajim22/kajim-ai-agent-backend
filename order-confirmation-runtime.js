@@ -14,12 +14,11 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
   const webhookPos = source.indexOf('app.post("/webhook/facebook"');
   if (webhookPos < 0) throw new Error('Final order runtime: Facebook webhook not found');
 
-  // This loader reads the original server.js source. Therefore helpers injected
-  // by an earlier chained loader are not guaranteed to exist here. Define the
-  // confirmation-reply helper in this final loader itself.
+  // This loader reads the original server.js source. Therefore helpers needed
+  // by the final guard are defined here as well.
   const helper = `
 function buildOrderConfirmationReply(orderInfo) {
-  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি.\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
 }
 `;
   const helperAnchor = 'const telegramBots = {};';
@@ -44,10 +43,28 @@ function buildOrderConfirmationReply(orderInfo) {
 `;
   source = source.slice(0, replyPos + replyAnchor.length) + guard + source.slice(replyPos + replyAnchor.length);
 
-  // Do not replace the existing save gate here. The earlier order-save-reliability
-  // layer already enforces explicit customer confirmation before saving. This
-  // final runtime only controls the reply shown to the customer, avoiding a
-  // brittle source-boundary dependency that can break deployment.
+  // Inject a final save check before the original legacy save block. This uses
+  // the stable anchor rather than depending on the exact shape of the old block.
+  const saveAnchor = 'const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));';
+  const savePos = source.indexOf(saveAnchor, webhookPos);
+  if (savePos < 0) throw new Error('Final order runtime: Facebook save anchor not found');
+
+  const finalSave = `
+        const finalFacebookDraft = await extractOrderInfo(page.histories[senderId]);
+        const finalFacebookConfirmed = /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)[\\s,।.!?]*$/i.test(String(text || '').trim());
+        console.log('Order gate FB final:', JSON.stringify({ complete: finalFacebookDraft.complete, confirmed: finalFacebookConfirmed, chatId: senderId }));
+        if (finalFacebookConfirmed && finalFacebookDraft.complete) {
+          const existingOrder = await pool.query('SELECT id FROM orders WHERE chat_id = $1 LIMIT 1', [String(senderId)]).catch(() => ({ rows: [] }));
+          if (!existingOrder.rows.length) {
+            await saveOrderAndNotify(page.agentId, senderId, finalFacebookDraft, 'Facebook Messenger', null);
+            console.log('Order save result FB final: attempted');
+          } else {
+            console.log('Order save result FB final: already exists id=' + existingOrder.rows[0].id);
+          }
+          page.orderSaved[senderId] = true;
+        }
+`;
+  source = source.slice(0, savePos) + finalSave + '\n        ' + source.slice(savePos);
 
   console.log('✓ Final order confirmation runtime guard active');
   return module._compile(source, filename);
