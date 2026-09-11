@@ -87,37 +87,17 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_facebook_events_created_at ON facebook_events(created_at)`);
     console.log('✓ Database ready');
   } catch (err) {
-    console.error('Database init error:', err.message);
+    console.error('Database initialization error:', err.message);
   }
 }
 
-// ==== Knowledge Base হেল্পার ====
-async function getKnowledgeText(agentId) {
-  if (!agentId) return '';
-  try {
-    const result = await pool.query(
-      "SELECT content FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at ASC",
-      [agentId]
-    );
-    if (result.rows.length === 0) return '';
-    const points = result.rows.map(r => `- ${r.content}`).join('\n');
-    return `\n\nনিচের তথ্যগুলো ব্যবহার করে উত্তর দাও (Knowledge Base):\n${points}\n\nযদি কোনো Knowledge Base তথ্যে ছবির লিংক (URL) থাকে এবং গ্রাহক সেই পণ্যের ছবি দেখতে চায়, তাহলে তোমার উত্তরের একদম শেষে এই ফরম্যাটে লিখো: [IMAGE: ছবির-লিংক]। এই ট্যাগ শুধু তখনই ব্যবহার করবে যখন গ্রাহক সত্যিই ছবি দেখতে চেয়েছে বা ছবি দেখানো প্রাসঙ্গিক।`;
-  } catch (err) {
-    console.error('getKnowledgeText error:', err.message);
-    return '';
-  }
-}
-
-// ==== Chat History হেল্পার ====
 async function saveChatMessage(platform, chatId, agentId, role, content) {
   try {
     await pool.query(
-      "INSERT INTO chat_messages (platform, chat_id, agent_id, role, content) VALUES ($1, $2, $3, $4, $5)",
-      [platform, String(chatId), agentId, role, content]
+      `INSERT INTO chat_messages (platform, chat_id, agent_id, role, content) VALUES ($1, $2, $3, $4, $5)`,
+      [platform, String(chatId), agentId || null, role, String(content || '')]
     );
   } catch (err) {
     console.error('saveChatMessage error:', err.message);
@@ -127,49 +107,33 @@ async function saveChatMessage(platform, chatId, agentId, role, content) {
 async function loadChatHistory(platform, chatId) {
   try {
     const result = await pool.query(
-      "SELECT role, content FROM chat_messages WHERE platform = $1 AND chat_id = $2 ORDER BY created_at ASC LIMIT 20",
+      `SELECT role, content FROM chat_messages WHERE platform = $1 AND chat_id = $2 ORDER BY created_at ASC LIMIT 100`,
       [platform, String(chatId)]
     );
-    return result.rows.map(r => ({ role: r.role, parts: [{ text: r.content }] }));
+    return result.rows.map(row => ({
+      role: row.role,
+      parts: [{ text: row.content }]
+    }));
   } catch (err) {
     console.error('loadChatHistory error:', err.message);
     return [];
   }
 }
 
-app.post("/knowledge/add", async (req, res) => {
-  const { agentId, content } = req.body;
-  if (!agentId || !content) return res.json({ success: false, error: "agentId ও content প্রয়োজন" });
-  try {
-    await pool.query("INSERT INTO agent_knowledge (agent_id, content) VALUES ($1, $2)", [agentId, content]);
-    res.json({ success: true });
-  } catch (err) {
-    res.json({ success: false, error: err.message });
-  }
-});
-
-app.post("/knowledge/delete", async (req, res) => {
-  const { id } = req.body;
-  if (!id) return res.json({ success: false, error: "id প্রয়োজন" });
-  try {
-    await pool.query("DELETE FROM agent_knowledge WHERE id = $1", [id]);
-    res.json({ success: true });
-  } catch (err) {
-    res.json({ success: false, error: err.message });
-  }
-});
-
-app.get("/knowledge/list/:agentId", async (req, res) => {
+async function getKnowledgeText(agentId) {
+  if (!agentId) return '';
   try {
     const result = await pool.query(
-      "SELECT id, content, created_at FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at DESC",
-      [req.params.agentId]
+      `SELECT content FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at ASC`,
+      [agentId]
     );
-    res.json(result.rows);
+    if (!result.rows.length) return '';
+    return `\n\nতথ্যভান্ডার:\n${result.rows.map(r => r.content).join('\n')}`;
   } catch (err) {
-    res.json({ error: err.message });
+    console.error('getKnowledgeText error:', err.message);
+    return '';
   }
-});
+}
 
 // ==== Order Detection ====
 
@@ -212,40 +176,50 @@ async function extractOrderInfo(historyArr) {
 
 async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, notifyToken) {
   try {
-    await pool.query(
-      `INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+    // Save to the existing orders table. The existing New Orders section reads this table.
+    const saved = await pool.query(
+      `INSERT INTO orders (agent_id, customer_name, customer_address, customer_phone, order_details, chat_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
       [agentId, orderInfo.customer_name, orderInfo.customer_address, orderInfo.customer_phone, orderInfo.order_details, String(chatId)]
     );
+
+    console.log(`✓ Order saved: id=${saved.rows[0]?.id}, chat_id=${chatId}`);
 
     const notifyText = `🛒 নতুন অর্ডার এসেছে! (${notifyPlatform})\n\n👤 নাম: ${orderInfo.customer_name}\n📍 ঠিকানা: ${orderInfo.customer_address}\n📞 ফোন: ${orderInfo.customer_phone}\n📦 বিবরণ: ${orderInfo.order_details}`;
 
     const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
-    if (myChatId && notifyToken) {
-      await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: myChatId, text: notifyText })
-      });
+    if (!myChatId) {
+      console.error('❌ MY_TELEGRAM_CHAT_ID is not set');
+      return;
     }
-  } catch (err) {
-    console.error('saveOrderAndNotify error:', err.message);
-  }
-}
 
-async function notifyOwnerViaAnyTelegramBot(text) {
-  try {
-    const myChatId = process.env.MY_TELEGRAM_CHAT_ID;
-    if (!myChatId) return;
-    const result = await pool.query("SELECT bot_token FROM telegram_bots LIMIT 1");
-    const anyToken = result.rows[0]?.bot_token;
-    if (!anyToken) return;
-    await fetch(`https://api.telegram.org/bot${anyToken}/sendMessage`, {
+    // Messenger passes null; in that case use the existing connected Telegram bot token.
+    let token = notifyToken;
+    if (!token) {
+      const result = await pool.query(`SELECT bot_token FROM telegram_bots LIMIT 1`);
+      token = result.rows[0]?.bot_token;
+    }
+
+    if (!token) {
+      console.error('❌ No Telegram bot token found for order notification');
+      return;
+    }
+
+    const telegramResponse = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: myChatId, text })
+      body: JSON.stringify({ chat_id: myChatId, text: notifyText })
     });
+
+    const telegramResult = await telegramResponse.json().catch(() => ({}));
+    if (!telegramResponse.ok || !telegramResult.ok) {
+      console.error('❌ Telegram order notification failed:', JSON.stringify(telegramResult));
+      return;
+    }
+
+    console.log('✓ Order notification sent to Telegram');
   } catch (err) {
-    console.error('notifyOwnerViaAnyTelegramBot error:', err.message);
+    console.error('❌ saveOrderAndNotify error:', err.message);
   }
 }
 
@@ -482,7 +456,8 @@ async function getFacebookPage(pageId) {
       systemPrompt: row.system_prompt,
       agentId: row.agent_id,
       histories: {},
-      orderSaved: {}
+      orderSaved: {},
+      pendingOrders: {}
     };
     return facebookPages[row.page_id];
   } catch (err) {
@@ -507,7 +482,6 @@ async function sendFacebookMessage(page, senderId, message) {
 }
 
 app.post("/webhook/facebook", async (req, res) => {
-  // Acknowledge immediately so Meta does not retry while AI processing is running.
   res.sendStatus(200);
   const body = req.body;
   if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return;
@@ -516,12 +490,13 @@ app.post("/webhook/facebook", async (req, res) => {
     const pageId = entry?.id;
     if (!pageId || !Array.isArray(entry.messaging)) continue;
 
-    // DB fallback makes Page → Agent routing survive Render restarts.
     const page = await getFacebookPage(pageId);
     if (!page) {
       console.warn(`Facebook Page not connected: ${pageId}`);
       continue;
     }
+
+    if (!page.pendingOrders) page.pendingOrders = {};
 
     for (const event of entry.messaging) {
       const senderId = event?.sender?.id;
@@ -531,12 +506,7 @@ app.post("/webhook/facebook", async (req, res) => {
 
       if (!senderId) continue;
       if (!textMsg && !attachments) continue;
-
-      // Messenger may retry delivery; process a message ID only once.
-      if (eventId && await isFacebookEventProcessed(eventId)) {
-        console.log(`Skipping duplicate Facebook event: ${eventId}`);
-        continue;
-      }
+      if (eventId && await isFacebookEventProcessed(eventId)) continue;
 
       let userParts = [];
       let text = textMsg || '';
@@ -586,10 +556,25 @@ app.post("/webhook/facebook", async (req, res) => {
           })
         });
         const data = await geminiRes.json();
-        if (!geminiRes.ok || data?.error) {
-          throw new Error(`Gemini request failed: ${data?.error?.message || geminiRes.statusText}`);
-        }
+        if (!geminiRes.ok || data?.error) throw new Error(`Gemini request failed: ${data?.error?.message || geminiRes.statusText}`);
+
         let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";
+
+        const normalized = String(text || '').trim().toLowerCase().replace(/[“”"'`]/g, '').replace(/[\s,،।.!?;:؛ঃ\-_/\\]+/g, '');
+        const confirmed = /^(হ্যাঁ|হ্যা|হা|জি|জ্বি|জী|জ্বী|ঠিকআছে|কনফার্ম|কনফার্মকরুন|নিশ্চিত|নিশ্চিতকরছি|অর্ডারদিন|অর্ডারকরুন|অর্ডারটাকরেদিন|করেদিন|করেদেন|confirm|confirmed|yes|ok|okay)$/.test(normalized);
+
+        let currentDraft = page.pendingOrders[senderId] || null;
+        if (!currentDraft) currentDraft = await extractOrderInfo(page.histories[senderId]);
+
+        if (currentDraft?.complete && !confirmed) {
+          page.pendingOrders[senderId] = currentDraft;
+          reply = `আপনার অর্ডারের তথ্যগুলো পেয়েছি।\n\n👤 নাম: ${currentDraft.customer_name}\n📍 ঠিকানা: ${currentDraft.customer_address}\n📞 ফোন: ${currentDraft.customer_phone}\n📦 পণ্য: ${currentDraft.order_details}\n\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।`;
+          console.log(`✓ Order confirmation question sent: chat_id=${senderId}`);
+        }
+
+        if (confirmed && page.pendingOrders[senderId]?.complete) {
+          currentDraft = page.pendingOrders[senderId];
+        }
 
         page.histories[senderId].push({ role: "model", parts: [{ text: reply }] });
         if (page.histories[senderId].length > 20) page.histories[senderId] = page.histories[senderId].slice(-20);
@@ -609,15 +594,14 @@ app.post("/webhook/facebook", async (req, res) => {
           await sendFacebookMessage(page, senderId, { text: reply });
         }
 
-        const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
-        const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
-        const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
-        if (!page.orderSaved[senderId] && hasPhoneNumber) {
-          const orderInfo = await extractOrderInfo(page.histories[senderId]);
-          if (orderInfo.complete) {
+        if (!page.orderSaved[senderId]) {
+          if (confirmed && currentDraft?.complete) {
             page.orderSaved[senderId] = true;
-            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
-            await notifyOwnerViaAnyTelegramBot(`🛒 নতুন অর্ডার এসেছে! (Facebook Messenger)\n\n👤 নাম: ${orderInfo.customer_name}\n📍 ঠিকানা: ${orderInfo.customer_address}\n📞 ফোন: ${orderInfo.customer_phone}\n📦 বিবরণ: ${orderInfo.order_details}`);
+            await saveOrderAndNotify(page.agentId, senderId, currentDraft, 'Facebook Messenger', null);
+            delete page.pendingOrders[senderId];
+            console.log(`✓ Confirmed Messenger order processed: chat_id=${senderId}`);
+          } else if (!confirmed && currentDraft?.complete) {
+            console.log(`⏳ Waiting for Messenger confirmation: chat_id=${senderId}`);
           }
         }
       } catch (err) {
@@ -653,18 +637,15 @@ async function restoreBots() {
         systemPrompt: row.system_prompt,
         agentId: row.agent_id,
         histories: {},
-        orderSaved: {}
+        orderSaved: {},
+        pendingOrders: {}
       };
     }
     console.log(`✓ ${fbResult.rows.length} টা Facebook Page লোড হয়েছে`);
   } catch (err) {
-    console.error('Restore bots error:', err.message);
+    console.error('restoreBots error:', err.message);
   }
 }
 
-// Start Server
-app.listen(port, async () => {
-  console.log(`Server running on port ${port}`);
-  await initDB();
-  await restoreBots();
-});
+initDB();
+app.listen(port, () => console.log(`Server running on port ${port}`));
