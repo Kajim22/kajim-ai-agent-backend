@@ -31,27 +31,28 @@ function buildOrderConfirmationReply(orderInfo) {
   const guard = `
         const finalUserText = String(text || '').trim();
         const finalUserConfirmed = /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)[\\s,।.!?]*$/i.test(finalUserText);
+        page.pendingOrderDrafts = page.pendingOrderDrafts || {};
         const finalDraft = await extractOrderInfo(page.histories[senderId]);
         if (finalDraft.complete && !finalUserConfirmed) {
+          page.pendingOrderDrafts[senderId] = finalDraft;
           reply = buildOrderConfirmationReply(finalDraft);
           console.log('✓ Final order guard: confirmation question enforced');
+          console.log('✓ Pending Facebook order draft stored for chat=' + senderId);
         }
 `;
   source = source.slice(0, replyPos + replyAnchor.length) + guard + source.slice(replyPos + replyAnchor.length);
 
-  // Stable final save path. It writes to the existing orders table only after
-  // explicit confirmation, then sends the owner Telegram notification using
-  // the existing notification helper. This avoids passing a null token to the
-  // legacy saver, which otherwise cannot send its direct Telegram message.
   const saveAnchor = 'const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));';
   const savePos = source.indexOf(saveAnchor, webhookPos);
   if (savePos < 0) throw new Error('Final order runtime: Facebook save anchor not found');
 
   const finalSave = `
-        const finalFacebookDraft = await extractOrderInfo(page.histories[senderId]);
+        page.pendingOrderDrafts = page.pendingOrderDrafts || {};
         const finalFacebookConfirmed = /^(হ্যাঁ|জি|জ্বি|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|নিশ্চিত|নিশ্চিত করছি|অর্ডার দিন|অর্ডার করুন|অর্ডারটা করে দিন|করে দিন|করে দেন)[\\s,।.!?]*$/i.test(String(text || '').trim());
-        console.log('Order gate FB final:', JSON.stringify({ complete: finalFacebookDraft.complete, confirmed: finalFacebookConfirmed, chatId: senderId }));
-        if (finalFacebookConfirmed && finalFacebookDraft.complete) {
+        const pendingFacebookDraft = page.pendingOrderDrafts[senderId];
+        const finalFacebookDraft = pendingFacebookDraft || await extractOrderInfo(page.histories[senderId]);
+        console.log('Order gate FB final:', JSON.stringify({ complete: !!finalFacebookDraft?.complete, confirmed: finalFacebookConfirmed, chatId: senderId, pendingDraft: !!pendingFacebookDraft }));
+        if (finalFacebookConfirmed && finalFacebookDraft?.complete) {
           const existingOrder = await pool.query('SELECT id FROM orders WHERE chat_id = $1 LIMIT 1', [String(senderId)]).catch(() => ({ rows: [] }));
           if (!existingOrder.rows.length) {
             try {
@@ -82,6 +83,7 @@ function buildOrderConfirmationReply(orderInfo) {
             console.log('Order save result FB final: already exists id=' + existingOrder.rows[0].id);
           }
           page.orderSaved[senderId] = true;
+          delete page.pendingOrderDrafts[senderId];
         }
 `;
   source = source.slice(0, savePos) + finalSave + '\n        ' + source.slice(savePos);
