@@ -14,6 +14,19 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
   const webhookPos = source.indexOf('app.post("/webhook/facebook"');
   if (webhookPos < 0) throw new Error('Final order runtime: Facebook webhook not found');
 
+  // This loader reads the original server.js source. Therefore helpers injected
+  // by an earlier chained loader are not guaranteed to exist here. Define the
+  // confirmation-reply helper in this final loader itself.
+  const helper = `
+function buildOrderConfirmationReply(orderInfo) {
+  return 'আপনার অর্ডারের তথ্যগুলো পেয়েছি।\\n\\n👤 নাম: ' + orderInfo.customer_name + '\\n📍 ঠিকানা: ' + orderInfo.customer_address + '\\n📞 ফোন: ' + orderInfo.customer_phone + '\\n📦 পণ্য: ' + orderInfo.order_details + '\\n\\nঅর্ডারটি কনফার্ম করবেন? কনফার্ম করতে “জি” বা “কনফার্ম” লিখুন।';
+}
+`;
+  const helperAnchor = 'const telegramBots = {};';
+  const helperPos = source.indexOf(helperAnchor);
+  if (helperPos < 0) throw new Error('Final order runtime: helper anchor not found');
+  source = source.slice(0, helperPos) + helper + '\n' + source.slice(helperPos);
+
   const replyAnchor = 'let reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, উত্তর তৈরি করা যায়নি।";';
   const replyPos = source.indexOf(replyAnchor, webhookPos);
   if (replyPos < 0) throw new Error('Final order runtime: Facebook reply anchor not found');
@@ -33,7 +46,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
   const gateStart = source.indexOf('const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));', webhookPos);
   if (gateStart < 0) throw new Error('Final order runtime: Facebook save gate not found');
-  const gateEnd = source.indexOf('\n      } catch (err) {', gateStart);
+  const gateEnd = source.indexOf('\\n      } catch (err) {', gateStart);
   if (gateEnd < 0) throw new Error('Final order runtime: Facebook save gate end not found');
 
   const finalGate = `const finalFacebookDraft = await extractOrderInfo(page.histories[senderId]);
