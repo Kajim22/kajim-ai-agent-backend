@@ -57,15 +57,24 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
   const guard = `
         if (!page.pendingOrderDrafts) page.pendingOrderDrafts = {};
+        if (!page.pendingOrderConfirmationKeys) page.pendingOrderConfirmationKeys = {};
         const finalOrderText = String(text || '').trim();
         const finalNormalized = finalOrderText.toLowerCase().replace(/[“”"'\\x60]/g, '').replace(/[\\s,،।.!?;:؛ঃ\\-_/\\\\]+/g, '');
         finalConfirmed = /^(হ্যাঁ|হ্যা|হা|জি|জ্বি|জী|জ্বী|ঠিকআছে|কনফার্ম|কনফার্মকরুন|নিশ্চিত|নিশ্চিতকরছি|অর্ডারদিন|অর্ডারকরুন|অর্ডারটাকরেদিন|করেদিন|করেদেন|confirm|confirmed|yes|ok|okay)$/.test(finalNormalized);
         finalOrderDraft = page.pendingOrderDrafts[senderId] || null;
         if (!finalOrderDraft) finalOrderDraft = await extractOrderInfo(page.histories[senderId]);
         if (finalOrderDraft?.complete && !finalConfirmed) {
+          const confirmationKey = [finalOrderDraft.customer_name, finalOrderDraft.customer_address, finalOrderDraft.customer_phone, finalOrderDraft.order_details]
+            .map(v => String(v || '').trim().toLowerCase()).join('|');
+          const alreadyAskedForSameDraft = page.pendingOrderConfirmationKeys[senderId] === confirmationKey;
           page.pendingOrderDrafts[senderId] = finalOrderDraft;
-          reply = buildOrderConfirmationReply(finalOrderDraft);
-          console.log('✓ Final order guard: confirmation question enforced');
+          if (!alreadyAskedForSameDraft) {
+            page.pendingOrderConfirmationKeys[senderId] = confirmationKey;
+            reply = buildOrderConfirmationReply(finalOrderDraft);
+            console.log('✓ Final order guard: confirmation question enforced');
+          } else {
+            console.log(\`↩️ Messenger confirmation already sent for current draft: chat_id=\${senderId}\`);
+          }
         }
         if (finalConfirmed && page.pendingOrderDrafts[senderId]?.complete) finalOrderDraft = page.pendingOrderDrafts[senderId];
 `;
@@ -80,6 +89,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
           page.orderSaved[senderId] = true;
           await saveOrderAndNotify(page.agentId, senderId, finalOrderDraft, 'Facebook Messenger', null);
           delete page.pendingOrderDrafts[senderId];
+          delete page.pendingOrderConfirmationKeys[senderId];
           console.log(\`✓ Confirmed Messenger order saved and notified: chat_id=\${senderId}\`);
         } else if (!page.orderSaved[senderId] && finalOrderDraft?.complete && !finalConfirmed) {
           console.log(\`⏳ Waiting for Messenger confirmation: chat_id=\${senderId}\`);
