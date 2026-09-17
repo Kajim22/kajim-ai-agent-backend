@@ -60,7 +60,31 @@ if (typeof originalFetch === 'function') {
       }
     }
 
-    return originalFetch(url, options);
+    // Keep Messenger Send API on the current Graph API version. The main
+    // server route may still contain an older fallback such as v20.0.
+    let finalUrl = url;
+    if (isFacebookSend) {
+      const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
+      finalUrl = target.replace(
+        /graph\.facebook\.com\/v\d+\.\d+\/me\/messages/,
+        `graph.facebook.com/${graphVersion}/me/messages`
+      );
+    }
+
+    const response = await originalFetch(finalUrl, options);
+
+    // Log Send API failures explicitly so Render logs show the actual Meta error.
+    if (isFacebookSend && !response.ok) {
+      try {
+        const clone = response.clone();
+        const errorData = await clone.json();
+        console.error('Facebook Messenger Send API failed:', JSON.stringify(errorData));
+      } catch (_) {
+        console.error('Facebook Messenger Send API failed:', response.status, response.statusText);
+      }
+    }
+
+    return response;
   };
 }
 
