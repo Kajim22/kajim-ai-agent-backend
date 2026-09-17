@@ -5,6 +5,7 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const originalPost = express.application.post;
+const originalListen = express.application.listen;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -41,6 +42,44 @@ async function subscribePageToMessenger(pageId, pageAccessToken) {
   }
   return data;
 }
+
+async function resubscribeStoredPages() {
+  try {
+    const result = await pool.query('SELECT page_id, page_access_token FROM facebook_pages');
+    for (const row of result.rows) {
+      try {
+        const validation = await validatePageToken(row.page_id, row.page_access_token);
+        if (!validation.ok) {
+          console.error(`Facebook stored token invalid for page ${row.page_id}: ${validation.error}`);
+          continue;
+        }
+        await subscribePageToMessenger(row.page_id, row.page_access_token);
+        console.log(`✓ Facebook Messenger webhook re-subscribed: page=${row.page_id}`);
+      } catch (err) {
+        console.error(`Facebook startup subscription failed for page ${row.page_id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('Facebook startup re-subscription error:', err.message);
+  }
+}
+
+// server.js calls app.listen(..., callback). Run the stored-page recovery
+// immediately after the server's own startup callback so the DB is ready.
+express.application.listen = function (...args) {
+  const originalCallback = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null;
+  if (originalCallback) {
+    args[args.length - 1] = async (...callbackArgs) => {
+      await originalCallback(...callbackArgs);
+      await resubscribeStoredPages();
+    };
+  } else {
+    args.push(async () => {
+      await resubscribeStoredPages();
+    });
+  }
+  return originalListen.apply(this, args);
+};
 
 express.application.post = function (path, ...handlers) {
   if (path === '/facebook/connect') {
