@@ -7,6 +7,45 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://yhspipyrgdcdfqqxxges.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || '';
+
+async function getAuthenticatedUser(req) {
+  const auth = String(req.headers.authorization || '');
+  if (!auth.startsWith('Bearer ') || !SUPABASE_ANON_KEY) return null;
+  const token = auth.slice(7).trim();
+  if (!token) return null;
+  try {
+    const r = await fetch(SUPABASE_URL + '/auth/v1/user', {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + token }
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (err) {
+    console.error('Supabase auth validation error:', err.message);
+    return null;
+  }
+}
+
+async function getAgentAccess(userId, agentId, marketplaceAgentId) {
+  if (!userId || !agentId) return { allowed: false };
+  const owner = await pool.query(
+    'SELECT id FROM user_agents WHERE id = $1 AND owner_user_id = $2 LIMIT 1',
+    [String(agentId), String(userId)]
+  );
+  if (owner.rows[0]) return { allowed: true, role: 'owner', marketplaceAgentId: null, subscriptionId: null };
+  if (!marketplaceAgentId) return { allowed: false };
+  const result = await pool.query(
+    'SELECT s.id AS subscription_id, s.status, s.marketplace_agent_id, a.owner_user_id, a.agent_id, a.monthly_price FROM marketplace_subscriptions s JOIN marketplace_agents a ON a.id = s.marketplace_agent_id WHERE s.buyer_user_id = $1 AND s.marketplace_agent_id = $2 AND (s.status = \'active\' OR a.monthly_price = 0) ORDER BY s.created_at DESC LIMIT 1',
+    [String(userId), String(marketplaceAgentId)]
+  );
+  if (result.rows[0]) {
+    const row = result.rows[0];
+    return { allowed: true, role: 'customer', marketplaceAgentId: String(row.marketplace_agent_id), subscriptionId: row.subscription_id ? String(row.subscription_id) : null, sellerUserId: String(row.owner_user_id) };
+  }
+  return { allowed: false };
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -63,6 +102,9 @@ async function initDB() {
         page_access_token TEXT NOT NULL,
         system_prompt TEXT NOT NULL,
         agent_id TEXT,
+        customer_user_id UUID,
+        marketplace_agent_id UUID,
+        subscription_id UUID,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
@@ -84,6 +126,10 @@ async function initDB() {
       )
     `);
     await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
+    await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS customer_user_id UUID`);
+    await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS marketplace_agent_id UUID`);
+    await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS subscription_id UUID`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_facebook_pages_customer_agent ON facebook_pages(customer_user_id, agent_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_facebook_events_created_at ON facebook_events(created_at)`);
     console.log('✓ Database ready');
   } catch (err) {
@@ -414,31 +460,53 @@ app.get("/telegram/list", async (req, res) => {
 const facebookPages = {};
 
 app.post("/facebook/connect", async (req, res) => {
-  const { pageId, pageAccessToken, systemPrompt, agentId } = req.body;
-  if (!pageId || !pageAccessToken) return res.json({ success: false, error: "pageId ও pageAccessToken প্রয়োজন" });
-  const prompt = systemPrompt || "তুমি একজন সহকারী।";
-  facebookPages[pageId] = { pageAccessToken, systemPrompt: prompt, agentId: agentId || null, histories: {}, orderSaved: {} };
+  const { pageId, pageAccessToken, systemPrompt, agentId, marketplaceAgentId } = req.body;
+  if (!pageId || !pageAccessToken || !agentId) return res.json({ success: false, error: "pageId, pageAccessToken ও agentId প্রয়োজন" });
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
   try {
+    const access = await getAgentAccess(user.id, agentId, marketplaceAgentId);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "এই Agent আপনার account-এর জন্য authorized নয়। Agentটি কিনে/activate করে আবার চেষ্টা করুন।" });
+    const prompt = systemPrompt || "তুমি একজন সহকারী।";
+    facebookPages[pageId] = { pageAccessToken, systemPrompt: prompt, agentId: String(agentId), customerUserId: String(user.id), marketplaceAgentId: access.marketplaceAgentId, subscriptionId: access.subscriptionId, histories: {}, orderSaved: {} };
     await pool.query(
-      `INSERT INTO facebook_pages (page_id, page_access_token, system_prompt, agent_id) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (page_id) DO UPDATE SET page_access_token = $2, system_prompt = $3, agent_id = $4`,
-      [pageId, pageAccessToken, prompt, agentId || null]
+      "INSERT INTO facebook_pages (page_id, page_access_token, system_prompt, agent_id, customer_user_id, marketplace_agent_id, subscription_id) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (page_id) DO UPDATE SET page_access_token = EXCLUDED.page_access_token, system_prompt = EXCLUDED.system_prompt, agent_id = EXCLUDED.agent_id, customer_user_id = EXCLUDED.customer_user_id, marketplace_agent_id = EXCLUDED.marketplace_agent_id, subscription_id = EXCLUDED.subscription_id",
+      [pageId, pageAccessToken, prompt, String(agentId), String(user.id), access.marketplaceAgentId, access.subscriptionId]
     );
-    res.json({ success: true });
+    const count = await pool.query("SELECT COUNT(*)::int AS count FROM facebook_pages WHERE customer_user_id = $1 AND agent_id = $2", [String(user.id), String(agentId)]);
+    res.json({ success: true, connectedPages: count.rows[0]?.count || 1 });
+  } catch (err) {
+    console.error("Facebook connect error:", err.message);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.get("/facebook/pages/:agentId", async (req, res) => {
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
+  const agentId = String(req.params.agentId || '');
+  try {
+    const access = await getAgentAccess(user.id, agentId, req.query.marketplaceAgentId || null);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "Agent access denied." });
+    const result = await pool.query("SELECT page_id, agent_id, marketplace_agent_id, created_at FROM facebook_pages WHERE customer_user_id = $1 AND agent_id = $2 ORDER BY created_at DESC", [String(user.id), agentId]);
+    res.json({ success: true, pages: result.rows });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
 });
 
-app.get("/webhook/facebook", (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  const verifyToken = process.env.FB_VERIFY_TOKEN;
-  if (mode === 'subscribe' && verifyToken && token === verifyToken && challenge) {
-    return res.status(200).send(challenge);
+app.post("/facebook/disconnect", async (req, res) => {
+  const { pageId, agentId } = req.body;
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
+  if (!pageId || !agentId) return res.json({ success: false, error: "pageId ও agentId প্রয়োজন" });
+  try {
+    const result = await pool.query("DELETE FROM facebook_pages WHERE page_id = $1 AND agent_id = $2 AND customer_user_id = $3 RETURNING page_id", [String(pageId), String(agentId), String(user.id)]);
+    delete facebookPages[String(pageId)];
+    res.json({ success: true, disconnected: result.rowCount > 0 });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
   }
-  return res.sendStatus(403);
 });
 
 async function getUrlAsBase64(url) {
@@ -617,6 +685,9 @@ async function restoreBots() {
         pageAccessToken: row.page_access_token,
         systemPrompt: row.system_prompt,
         agentId: row.agent_id,
+        customerUserId: row.customer_user_id || null,
+        marketplaceAgentId: row.marketplace_agent_id || null,
+        subscriptionId: row.subscription_id || null,
         histories: {},
         orderSaved: {}
       };
