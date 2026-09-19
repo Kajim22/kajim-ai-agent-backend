@@ -127,6 +127,10 @@ async function initDB() {
     `);
     await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS agent_id TEXT`);
     await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS customer_user_id UUID`);
+    await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS customer_user_id UUID`);
+    await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS marketplace_agent_id UUID`);
+    await pool.query(`ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS subscription_id UUID`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_telegram_bots_customer_agent ON telegram_bots(customer_user_id, agent_id)`);
     await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS marketplace_agent_id UUID`);
     await pool.query(`ALTER TABLE facebook_pages ADD COLUMN IF NOT EXISTS subscription_id UUID`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_facebook_pages_customer_agent ON facebook_pages(customer_user_id, agent_id)`);
@@ -340,21 +344,82 @@ app.post("/chat", async (req, res) => {
 const telegramBots = {};
 
 app.post("/telegram/connect", async (req, res) => {
-  const { botToken, systemPrompt, agentId } = req.body;
-  if (!botToken) return res.json({ success: false, error: "Bot token প্রয়োজন" });
-  const prompt = systemPrompt || "তুমি একজন সহকারী।";
-  telegramBots[botToken] = { systemPrompt: prompt, agentId: agentId || null, histories: {}, orderSaved: {} };
+  const { botToken, systemPrompt, agentId, marketplaceAgentId } = req.body;
+  if (!botToken || !agentId) return res.json({ success: false, error: "Bot token ও agentId প্রয়োজন" });
+
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
+
   try {
+    const access = await getAgentAccess(user.id, agentId, marketplaceAgentId);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "এই Agent আপনার account-এর জন্য authorized নয়। Agentটি কিনে/activate করে আবার চেষ্টা করুন।" });
+
+    const prompt = systemPrompt || "তুমি একজন সহকারী।";
+    telegramBots[botToken] = {
+      systemPrompt: prompt,
+      agentId: String(agentId),
+      customerUserId: String(user.id),
+      marketplaceAgentId: access.marketplaceAgentId,
+      subscriptionId: access.subscriptionId,
+      histories: {},
+      orderSaved: {}
+    };
+
     const webhookUrl = `https://kajim-ai-agent-backend.onrender.com/telegram/webhook/${botToken}`;
     const setResp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
     const setData = await setResp.json();
     if (!setData.ok) return res.json({ success: false, error: setData.description || "Webhook সেট করা যায়নি" });
+
     await pool.query(
-      `INSERT INTO telegram_bots (bot_token, system_prompt, agent_id) VALUES ($1, $2, $3)
-       ON CONFLICT (bot_token) DO UPDATE SET system_prompt = $2, agent_id = $3`,
-      [botToken, prompt, agentId || null]
+      `INSERT INTO telegram_bots (bot_token, system_prompt, agent_id, customer_user_id, marketplace_agent_id, subscription_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (bot_token) DO UPDATE SET
+       system_prompt = EXCLUDED.system_prompt,
+       agent_id = EXCLUDED.agent_id,
+       customer_user_id = EXCLUDED.customer_user_id,
+       marketplace_agent_id = EXCLUDED.marketplace_agent_id,
+       subscription_id = EXCLUDED.subscription_id`,
+      [botToken, prompt, String(agentId), String(user.id), access.marketplaceAgentId, access.subscriptionId]
     );
     res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.get("/telegram/bots/:agentId", async (req, res) => {
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
+  const agentId = String(req.params.agentId || '');
+  try {
+    const access = await getAgentAccess(user.id, agentId, req.query.marketplaceAgentId || null);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "Agent access denied." });
+    const result = await pool.query(
+      `SELECT bot_token, agent_id, marketplace_agent_id, created_at
+       FROM telegram_bots
+       WHERE customer_user_id = $1 AND agent_id = $2
+       ORDER BY created_at DESC`,
+      [String(user.id), agentId]
+    );
+    res.json({ success: true, bots: result.rows.map(r => ({ bot_token: r.bot_token, agent_id: r.agent_id, marketplace_agent_id: r.marketplace_agent_id, created_at: r.created_at })) });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post("/telegram/disconnect", async (req, res) => {
+  const { botToken, agentId } = req.body;
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required." });
+  if (!botToken || !agentId) return res.json({ success: false, error: "botToken ও agentId প্রয়োজন" });
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook?drop_pending_updates=false`).catch(() => {});
+    const result = await pool.query(
+      'DELETE FROM telegram_bots WHERE bot_token = $1 AND agent_id = $2 AND customer_user_id = $3 RETURNING bot_token',
+      [String(botToken), String(agentId), String(user.id)]
+    );
+    delete telegramBots[String(botToken)];
+    res.json({ success: true, disconnected: result.rowCount > 0 });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
