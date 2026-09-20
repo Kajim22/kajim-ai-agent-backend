@@ -183,35 +183,49 @@ async function loadChatHistory(platform, chatId) {
 
 app.post("/knowledge/add", async (req, res) => {
   const { agentId, content } = req.body;
-  if (!agentId || !content) return res.json({ success: false, error: "agentId ও content প্রয়োজন" });
+  if (!agentId || !content) return res.status(400).json({ success: false, error: "agentId ও content প্রয়োজন" });
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required" });
   try {
-    await pool.query("INSERT INTO agent_knowledge (agent_id, content) VALUES ($1, $2)", [agentId, content]);
+    const access = await getAgentAccess(user.id, agentId, req.body.marketplaceAgentId || null);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "Agent access denied" });
+    await pool.query("INSERT INTO agent_knowledge (agent_id, content) VALUES ($1, $2)", [String(agentId), content]);
     res.json({ success: true });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.post("/knowledge/delete", async (req, res) => {
   const { id } = req.body;
-  if (!id) return res.json({ success: false, error: "id প্রয়োজন" });
+  if (!id) return res.status(400).json({ success: false, error: "id প্রয়োজন" });
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ success: false, error: "Login required" });
   try {
+    const row = await pool.query("SELECT agent_id FROM agent_knowledge WHERE id = $1 LIMIT 1", [id]);
+    if (!row.rows[0]) return res.status(404).json({ success: false, error: "Knowledge not found" });
+    const access = await getAgentAccess(user.id, row.rows[0].agent_id, req.body.marketplaceAgentId || null);
+    if (!access.allowed) return res.status(403).json({ success: false, error: "Agent access denied" });
     await pool.query("DELETE FROM agent_knowledge WHERE id = $1", [id]);
     res.json({ success: true });
   } catch (err) {
-    res.json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.get("/knowledge/list/:agentId", async (req, res) => {
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ error: "Login required" });
   try {
+    const access = await getAgentAccess(user.id, req.params.agentId, req.query.marketplaceAgentId || null);
+    if (!access.allowed) return res.status(403).json({ error: "Agent access denied" });
     const result = await pool.query(
       "SELECT id, content, created_at FROM agent_knowledge WHERE agent_id = $1 ORDER BY created_at DESC",
       [req.params.agentId]
     );
     res.json(result.rows);
   } catch (err) {
-    res.json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -287,11 +301,25 @@ async function notifyOwnerViaAnyTelegramBot(text) {
 }
 
 app.get("/orders/list", async (req, res) => {
+  const user = await getAuthenticatedUser(req);
+  if (!user?.id) return res.status(401).json({ error: "Login required" });
   try {
-    const result = await pool.query("SELECT * FROM orders ORDER BY created_at DESC");
+    const result = await pool.query(
+      `SELECT o.* FROM orders o
+       WHERE EXISTS (
+         SELECT 1 FROM user_agents ua
+         WHERE ua.id = o.agent_id AND ua.owner_user_id = $1
+       )
+       OR EXISTS (
+         SELECT 1 FROM marketplace_agents ma
+         WHERE ma.agent_id = o.agent_id AND ma.owner_user_id = $1
+       )
+       ORDER BY o.created_at DESC`,
+      [String(user.id)]
+    );
     res.json(result.rows);
   } catch (err) {
-    res.json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
