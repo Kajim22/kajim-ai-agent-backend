@@ -34,14 +34,38 @@ async function getAgentAccess(userId, agentId, marketplaceAgentId) {
     [String(agentId), String(userId)]
   );
   if (owner.rows[0]) return { allowed: true, role: 'owner', marketplaceAgentId: null, subscriptionId: null };
+
+  const admin = await pool.query('SELECT user_id FROM platform_admins WHERE user_id = $1 LIMIT 1', [String(userId)]);
+  if (admin.rows[0] && marketplaceAgentId) {
+    return { allowed: true, role: 'admin', marketplaceAgentId: String(marketplaceAgentId), subscriptionId: null };
+  }
+
   if (!marketplaceAgentId) return { allowed: false };
   const result = await pool.query(
-    'SELECT s.id AS subscription_id, s.status, s.marketplace_agent_id, a.owner_user_id, a.agent_id, a.monthly_price FROM marketplace_subscriptions s JOIN marketplace_agents a ON a.id = s.marketplace_agent_id WHERE s.buyer_user_id = $1 AND s.marketplace_agent_id = $2 AND (s.status = \'active\' OR a.monthly_price = 0) ORDER BY s.created_at DESC LIMIT 1',
+    `SELECT s.id AS subscription_id, s.status, s.access_source, s.access_expires_at,
+            s.marketplace_agent_id, a.owner_user_id, a.agent_id, a.monthly_price
+       FROM marketplace_subscriptions s
+       JOIN marketplace_agents a ON a.id = s.marketplace_agent_id
+      WHERE s.buyer_user_id = $1
+        AND s.marketplace_agent_id = $2
+        AND (
+          s.status = 'active'
+          OR s.status = 'free'
+          OR (s.status = 'admin_granted' AND (s.access_expires_at IS NULL OR s.access_expires_at > now()))
+        )
+      ORDER BY s.created_at DESC
+      LIMIT 1`,
     [String(userId), String(marketplaceAgentId)]
   );
   if (result.rows[0]) {
     const row = result.rows[0];
-    return { allowed: true, role: 'customer', marketplaceAgentId: String(row.marketplace_agent_id), subscriptionId: row.subscription_id ? String(row.subscription_id) : null, sellerUserId: String(row.owner_user_id) };
+    return {
+      allowed: true,
+      role: row.status === 'admin_granted' ? 'admin_granted' : 'customer',
+      marketplaceAgentId: String(row.marketplace_agent_id),
+      subscriptionId: row.subscription_id ? String(row.subscription_id) : null,
+      sellerUserId: String(row.owner_user_id)
+    };
   }
   return { allowed: false };
 }
