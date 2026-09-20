@@ -324,6 +324,72 @@ async function notifyOwnerViaAnyTelegramBot(text) {
   }
 }
 
+async function requirePlatformAdmin(req){
+  const user = await getAuthenticatedUser(req);
+  if(!user?.id) return {ok:false,status:401,error:'Login required'};
+  const result = await pool.query('SELECT user_id, role FROM platform_admins WHERE user_id = $1 LIMIT 1',[String(user.id)]);
+  if(!result.rows[0]) return {ok:false,status:403,error:'Platform admin permission required'};
+  return {ok:true,user,admin:result.rows[0]};
+}
+
+app.get("/admin/marketplace/access", async (req,res)=>{
+  const auth=await requirePlatformAdmin(req);
+  if(!auth.ok) return res.status(auth.status).json({error:auth.error});
+  try{
+    const r=await pool.query(`SELECT s.id,s.marketplace_agent_id,s.buyer_user_id,s.status,s.monthly_price,
+      s.platform_fee,s.seller_amount,s.access_source,s.access_granted_by,s.access_expires_at,
+      s.started_at,s.current_period_end,s.activated_at,a.name AS agent_name
+      FROM marketplace_subscriptions s
+      JOIN marketplace_agents a ON a.id=s.marketplace_agent_id
+      ORDER BY s.created_at DESC LIMIT 500`);
+    res.json({success:true,access:r.rows});
+  }catch(err){res.status(500).json({success:false,error:err.message});}
+});
+
+app.post("/admin/marketplace/access/grant", async (req,res)=>{
+  const auth=await requirePlatformAdmin(req);
+  if(!auth.ok) return res.status(auth.status).json({error:auth.error});
+  const {buyerUserId,marketplaceAgentId,expiresAt}=req.body||{};
+  if(!buyerUserId||!marketplaceAgentId) return res.status(400).json({success:false,error:'buyerUserId ও marketplaceAgentId প্রয়োজন'});
+  try{
+    const agent=await pool.query('SELECT id,owner_user_id,monthly_price FROM marketplace_agents WHERE id=$1 AND status=\'published\' LIMIT 1',[String(marketplaceAgentId)]);
+    if(!agent.rows[0]) return res.status(404).json({success:false,error:'Published marketplace agent not found'});
+    const price=Number(agent.rows[0].monthly_price||0);
+    const existing=await pool.query(`SELECT id FROM marketplace_subscriptions
+      WHERE buyer_user_id=$1 AND marketplace_agent_id=$2 AND status IN ('active','admin_granted','free')
+      ORDER BY created_at DESC LIMIT 1`,[String(buyerUserId),String(marketplaceAgentId)]);
+    if(existing.rows[0]){
+      await pool.query(`UPDATE marketplace_subscriptions SET status='admin_granted',access_source='admin_grant',
+        access_granted_by=$1,access_expires_at=$2,activated_at=COALESCE(activated_at,now()),
+        started_at=COALESCE(started_at,now()),current_period_end=$2
+        WHERE id=$3`,[String(auth.user.id),expiresAt||null,String(existing.rows[0].id)]);
+    }else{
+      await pool.query(`INSERT INTO marketplace_subscriptions
+        (marketplace_agent_id,buyer_user_id,status,monthly_price,platform_fee,seller_amount,
+         marketplace_agent_owner_user_id,access_source,access_granted_by,access_expires_at,started_at,
+         current_period_end,activated_at)
+        VALUES($1,$2,'admin_granted',$3,0,0,$4,'admin_grant',$5,$6,now(),$6,now())`,
+        [String(marketplaceAgentId),String(buyerUserId),price,String(agent.rows[0].owner_user_id),String(auth.user.id),expiresAt||null]);
+    }
+    res.json({success:true,message:'Agent access granted',expiresAt:expiresAt||null});
+  }catch(err){res.status(500).json({success:false,error:err.message});}
+});
+
+app.post("/admin/marketplace/access/revoke", async (req,res)=>{
+  const auth=await requirePlatformAdmin(req);
+  if(!auth.ok) return res.status(auth.status).json({error:auth.error});
+  const {subscriptionId}=req.body||{};
+  if(!subscriptionId) return res.status(400).json({success:false,error:'subscriptionId প্রয়োজন'});
+  try{
+    const r=await pool.query(`UPDATE marketplace_subscriptions
+      SET status='cancelled',access_expires_at=now()
+      WHERE id=$1 AND access_source='admin_grant'
+      RETURNING id`,[String(subscriptionId)]);
+    if(!r.rows[0]) return res.status(404).json({success:false,error:'Admin-granted access not found'});
+    res.json({success:true,message:'Agent access revoked'});
+  }catch(err){res.status(500).json({success:false,error:err.message});}
+});
+
 app.get("/orders/list", async (req, res) => {
   const user = await getAuthenticatedUser(req);
   if (!user?.id) return res.status(401).json({ error: "Login required" });
