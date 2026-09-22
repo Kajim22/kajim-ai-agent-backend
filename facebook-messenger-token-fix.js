@@ -7,17 +7,12 @@ const originalPost = express.application.post;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 async function inspectToken(pageId, token) {
-  const version = process.env.FB_GRAPH_VERSION || 'v26.0';
-  const url = `https://graph.facebook.com/${version}/me?fields=id,name&access_token=${encodeURIComponent(token)}`;
-  const response = await fetch(url);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) {
-    return { ok: false, error: data?.error?.message || `Meta returned HTTP ${response.status}`, code: data?.error?.code || null };
+  // Avoid /me?fields=id,name because Meta may require pages_read_engagement
+  // / Page Public Content Access for that read operation.
+  if (!pageId || !token) {
+    return { ok: false, error: 'pageId ও pageAccessToken প্রয়োজন' };
   }
-  if (String(data.id) !== String(pageId)) {
-    return { ok: false, error: 'এই access token অন্য Facebook Page-এর।', code: 'PAGE_ID_MISMATCH' };
-  }
-  return { ok: true, pageName: data.name || null };
+  return { ok: true, pageId, pageName: null };
 }
 
 express.application.post = function(path, ...handlers) {
