@@ -12,17 +12,14 @@ const pool = new Pool({
 });
 
 async function validatePageToken(pageId, pageAccessToken) {
-  const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
-  const url = `https://graph.facebook.com/${graphVersion}/me?fields=id,name&access_token=${encodeURIComponent(pageAccessToken)}`;
-  const response = await fetch(url);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data?.error) {
-    return { ok: false, error: data?.error?.message || `Facebook token validation failed (${response.status})` };
+  // Do not call /me or Page content endpoints here. Those endpoints can
+  // require pages_read_engagement / Page Public Content Access even when the
+  // token is otherwise usable for Messenger webhook subscription.
+  // The /subscribed_apps call below is the real connection/permission check.
+  if (!pageId || !pageAccessToken) {
+    return { ok: false, error: 'pageId ও pageAccessToken প্রয়োজন' };
   }
-  if (String(data.id || '') !== String(pageId)) {
-    return { ok: false, error: 'এই Page Access Token এই Page ID-এর সাথে মিলে না।' };
-  }
-  return { ok: true, pageName: data.name || null };
+  return { ok: true, pageName: null };
 }
 
 async function subscribePageToMessenger(pageId, pageAccessToken) {
@@ -31,7 +28,7 @@ async function subscribePageToMessenger(pageId, pageAccessToken) {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscribed_fields: ['messages', 'messaging_postbacks', 'messaging_optins'] })
+    body: JSON.stringify({ subscribed_fields: ['messages'] })
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data?.error || data?.success === false) {
@@ -45,12 +42,6 @@ async function storedPageRecovery() {
     const result = await pool.query('SELECT page_id, page_access_token FROM facebook_pages');
     for (const row of result.rows) {
       try {
-        const validation = await validatePageToken(row.page_id, row.page_access_token);
-        if (!validation.ok) {
-          await pool.query('DELETE FROM facebook_pages WHERE page_id = $1', [row.page_id]);
-          console.error(`Facebook stored token invalid for page ${row.page_id}; removed stale connection: ${validation.error}`);
-          continue;
-        }
         await subscribePageToMessenger(row.page_id, row.page_access_token);
         console.log(`✓ Facebook Messenger webhook re-subscribed: page=${row.page_id}`);
       } catch (err) {
