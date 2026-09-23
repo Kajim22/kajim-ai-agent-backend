@@ -726,7 +726,7 @@ async function getFacebookPage(pageId) {
 }
 
 async function sendFacebookMessage(page, senderId, message) {
-  const graphVersion = process.env.FB_GRAPH_VERSION || 'v20.0';
+  const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
   const url = `https://graph.facebook.com/${graphVersion}/me/messages?access_token=${page.pageAccessToken}`;
   const response = await fetch(url, {
     method: "POST",
@@ -740,9 +740,24 @@ async function sendFacebookMessage(page, senderId, message) {
   return data;
 }
 
+app.get("/webhook/facebook", (req, res) => {
+  const mode = String(req.query["hub.mode"] || "");
+  const token = String(req.query["hub.verify_token"] || "");
+  const challenge = String(req.query["hub.challenge"] || "");
+  const expected = String(process.env.FB_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN || "");
+  console.log(`Facebook webhook verification request: mode=${mode}, token=${token ? "provided" : "missing"}`);
+  if (mode === "subscribe" && expected && token === expected) {
+    console.log("✓ Facebook webhook verification successful");
+    return res.status(200).send(challenge);
+  }
+  console.error("Facebook webhook verification failed: verify token mismatch or FB_VERIFY_TOKEN not configured");
+  return res.sendStatus(403);
+});
+
 app.post("/webhook/facebook", async (req, res) => {
   res.sendStatus(200);
   const body = req.body;
+  console.log(`Facebook webhook delivery received: object=${body?.object || "unknown"}, entries=${Array.isArray(body?.entry) ? body.entry.length : 0}`);
   if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return;
   for (const entry of body.entry) {
     const pageId = entry?.id;
