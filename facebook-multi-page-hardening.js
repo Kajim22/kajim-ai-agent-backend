@@ -24,16 +24,15 @@ async function validatePageToken(pageId, pageAccessToken) {
 
 async function subscribePageToMessenger(pageId, pageAccessToken) {
   const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
-  const url = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}`;
+  const url = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}&subscribed_fields=messages`;
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscribed_fields: ['messages'] })
+    method: 'POST'
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data?.error || data?.success === false) {
     throw new Error(data?.error?.message || `Page webhook subscription failed (${response.status})`);
   }
+  console.log(`✓ Facebook Messenger messages subscription active: page=${pageId}`);
   return data;
 }
 
@@ -55,74 +54,27 @@ async function storedPageRecovery() {
 
 express.application.post = function (path, ...handlers) {
   if (path === '/facebook/connect') {
-    return originalPost.call(this, path, async (req, res) => {
+    // Subscribe the Page first, then let server.js run its normal authenticated
+    // connect handler. This keeps the existing authorization/database logic intact.
+    return originalPost.call(this, path, async (req, res, next) => {
       const pageId = String(req.body?.pageId || '').trim();
       const pageAccessToken = String(req.body?.pageAccessToken || '').trim();
-      const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
-      const systemPrompt = String(req.body?.systemPrompt || 'তুমি একজন সহকারী।');
 
       if (!pageId || !pageAccessToken) {
         return res.status(400).json({ success: false, error: 'pageId ও pageAccessToken প্রয়োজন' });
       }
 
       try {
-        const validation = await validatePageToken(pageId, pageAccessToken);
-        if (!validation.ok) {
-          console.error(`Facebook token rejected for page ${pageId}: ${validation.error}`);
-          return res.status(401).json({ success: false, error: validation.error });
-        }
-
         await subscribePageToMessenger(pageId, pageAccessToken);
-
-        // page_id is the primary key, so each Page is stored independently.
-        // Multiple different Page IDs may point to the same agentId.
-        await pool.query(
-          `INSERT INTO facebook_pages (page_id, page_access_token, system_prompt, agent_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (page_id) DO UPDATE SET
-             page_access_token = EXCLUDED.page_access_token,
-             system_prompt = EXCLUDED.system_prompt,
-             agent_id = EXCLUDED.agent_id`,
-          [pageId, pageAccessToken, systemPrompt, agentId]
-        );
-
-        const countResult = agentId
-          ? await pool.query('SELECT COUNT(*)::int AS count FROM facebook_pages WHERE agent_id = $1', [agentId])
-          : { rows: [{ count: 0 }] };
-
-        console.log(`✓ Facebook Page connected: page=${pageId}, agent=${agentId || 'none'}, totalForAgent=${countResult.rows[0].count}`);
-        return res.json({
-          success: true,
-          pageId,
-          pageName: validation.pageName || null,
-          agentId,
-          connectedPages: countResult.rows[0].count
+        next();
+      } catch (err) {
+        console.error(`Facebook Page subscription failed: page=${pageId}:`, err.message);
+        return res.status(502).json({
+          success: false,
+          error: 'Facebook Page webhook subscription failed: ' + err.message
         });
-      } catch (err) {
-        console.error(`Facebook connect failed for page ${pageId}:`, err.message);
-        return res.status(502).json({ success: false, error: err.message });
       }
-    });
-  }
-
-  if (path === '/facebook/disconnect') {
-    return originalPost.call(this, path, async (req, res) => {
-      const pageId = String(req.body?.pageId || '').trim();
-      const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
-      if (!pageId) return res.status(400).json({ success: false, error: 'pageId প্রয়োজন' });
-      try {
-        const result = await pool.query(
-          agentId
-            ? 'DELETE FROM facebook_pages WHERE page_id = $1 AND agent_id = $2 RETURNING page_id'
-            : 'DELETE FROM facebook_pages WHERE page_id = $1 RETURNING page_id',
-          agentId ? [pageId, agentId] : [pageId]
-        );
-        return res.json({ success: true, disconnected: result.rowCount > 0, pageId });
-      } catch (err) {
-        console.error('Facebook disconnect error:', err.message);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-    });
+    }, ...handlers);
   }
 
   return originalPost.call(this, path, ...handlers);
