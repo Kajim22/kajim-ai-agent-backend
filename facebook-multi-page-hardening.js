@@ -80,26 +80,6 @@ express.application.post = function (path, ...handlers) {
   return originalPost.call(this, path, ...handlers);
 };
 
-express.application.get = function (path, ...handlers) {
-  if (path === '/facebook/pages/:agentId') {
-    return originalGet.call(this, path, async (req, res) => {
-      try {
-        const result = await pool.query(
-          `SELECT page_id, agent_id, created_at
-           FROM facebook_pages
-           WHERE agent_id = $1
-           ORDER BY created_at ASC`,
-          [String(req.params.agentId)]
-        );
-        return res.json({ success: true, pages: result.rows });
-      } catch (err) {
-        console.error('Facebook pages list error:', err.message);
-        return res.status(500).json({ success: false, error: err.message });
-      }
-    });
-  }
-  return originalGet.call(this, path, ...handlers);
-};
 
 const originalListen = express.application.listen;
 express.application.listen = function (...args) {
