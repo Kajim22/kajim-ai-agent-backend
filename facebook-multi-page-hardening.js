@@ -24,7 +24,7 @@ async function validatePageToken(pageId, pageAccessToken) {
 
 async function subscribePageToMessenger(pageId, pageAccessToken) {
   const graphVersion = process.env.FB_GRAPH_VERSION || 'v26.0';
-  const url = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}&subscribed_fields=messages`;
+  const url = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}&subscribed_fields=messages,messaging_postbacks,message_reads`;
   const response = await fetch(url, {
     method: 'POST'
   });
