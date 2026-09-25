@@ -754,7 +754,7 @@ app.get("/webhook/facebook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.post("/webhook/facebook", async (req, res) => {
+async function facebookWebhookHandler(req, res) {
   res.sendStatus(200);
   const body = req.body;
   console.log(`Facebook webhook delivery received: object=${body?.object || "unknown"}, entries=${Array.isArray(body?.entry) ? body.entry.length : 0}`);
@@ -857,7 +857,12 @@ app.post("/webhook/facebook", async (req, res) => {
       }
     }
   }
-});
+}
+
+// Register both callback paths directly on the real Express app.
+// Meta is currently configured for /webhook; /webhook/facebook remains supported.
+app.post("/webhook", facebookWebhookHandler);
+app.post("/webhook/facebook", facebookWebhookHandler);
 
 app.get("/facebook/list", async (req, res) => {
   try {
