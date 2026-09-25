@@ -48,9 +48,19 @@ if (!express.application.__akexaWebhookFinalizer) {
         console.log('✓ Final webhook route installed: POST /webhook -> /webhook/facebook');
       }
 
-      // IMPORTANT: /webhook may already have legacy alias/finalizer handlers.
-      // Meta must hit the real handler registered by server.js, which is the
-      // last /webhook POST route. Remove earlier duplicates before listening.
+      // Do not clean the route stack here: express-final-init-repair wraps
+      // listen() and restores preloaded routes inside originalListen().
+      // Cleaning here would therefore happen too early and be overwritten.
+    } catch (err) {
+      console.error('Facebook webhook finalizer pre-listen error:', err.message);
+    }
+
+    const server = originalListen.apply(this, args);
+
+    // express-final-init-repair has now restored all preloaded routes and
+    // server.js has already registered its real /webhook handler. At this
+    // point the final /webhook POST route is the real server.js handler.
+    try {
       const stack = app?._router?.stack;
       if (Array.isArray(stack)) {
         const postIndexes = [];
@@ -60,11 +70,14 @@ if (!express.application.__akexaWebhookFinalizer) {
             postIndexes.push(i);
           }
         }
+
         if (postIndexes.length > 1) {
           const keepIndex = postIndexes[postIndexes.length - 1];
           const remove = new Set(postIndexes.filter(i => i !== keepIndex));
           app._router.stack = stack.filter((_, i) => !remove.has(i));
-          console.log(`✓ Facebook webhook duplicate POST routes cleaned before listen: kept=${keepIndex}, removed=${remove.size}`);
+          console.log(`✓ Facebook webhook duplicate POST routes cleaned AFTER route restoration: kept=${keepIndex}, removed=${remove.size}`);
+        } else {
+          console.log(`✓ Facebook webhook POST route count after restoration: ${postIndexes.length}`);
         }
       }
 
@@ -75,10 +88,10 @@ if (!express.application.__akexaWebhookFinalizer) {
 
       console.log('✓ Facebook webhook routes active:', JSON.stringify(routes || []));
     } catch (err) {
-      console.error('Facebook webhook finalizer error:', err.message);
+      console.error('Facebook webhook finalizer post-listen error:', err.message);
     }
 
-    return originalListen.apply(this, args);
+    return server;
   };
 
   express.application.__akexaWebhookFinalizer = true;
