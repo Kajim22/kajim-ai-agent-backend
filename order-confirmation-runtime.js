@@ -43,8 +43,11 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
     source = source.slice(0, helperPos) + helper + source.slice(helperPos);
   }
 
-  const webhookPos = source.indexOf('app.post("/webhook/facebook"');
-  if (webhookPos < 0) throw new Error('Final order runtime: Facebook webhook not found');
+  // server.js now exposes a shared named Facebook webhook handler on both
+  // /webhook and /webhook/facebook. Patch the handler body itself so this
+  // runtime remains compatible with the consolidated route registration.
+  const webhookPos = source.indexOf('async function facebookWebhookHandler(');
+  if (webhookPos < 0) throw new Error('Final order runtime: Facebook webhook handler not found');
 
   const tryAnchor = '      try {\n        const knowledgeText = await getKnowledgeText(page.agentId);';
   const tryPos = source.indexOf(tryAnchor, webhookPos);
