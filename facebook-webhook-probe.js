@@ -13,7 +13,7 @@ if (!express.application.__akexaFacebookWebhookProbe) {
     if (!app.__akexaFacebookWebhookProbeInstalled) {
       app.__akexaFacebookWebhookProbeInstalled = true;
 
-      originalUse.call(app, function facebookWebhookProbe(req, _res, next) {
+      originalUse.call(app, function facebookWebhookProbe(req, res, next) {
         const url = String(req.originalUrl || req.url || '');
         const path = url.split('?')[0];
 
