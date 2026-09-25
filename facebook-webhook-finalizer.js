@@ -48,6 +48,26 @@ if (!express.application.__akexaWebhookFinalizer) {
         console.log('✓ Final webhook route installed: POST /webhook -> /webhook/facebook');
       }
 
+      // IMPORTANT: /webhook may already have legacy alias/finalizer handlers.
+      // Meta must hit the real handler registered by server.js, which is the
+      // last /webhook POST route. Remove earlier duplicates before listening.
+      const stack = app?._router?.stack;
+      if (Array.isArray(stack)) {
+        const postIndexes = [];
+        for (let i = 0; i < stack.length; i++) {
+          const layer = stack[i];
+          if (layer?.route?.path === '/webhook' && layer.route.methods?.post) {
+            postIndexes.push(i);
+          }
+        }
+        if (postIndexes.length > 1) {
+          const keepIndex = postIndexes[postIndexes.length - 1];
+          const remove = new Set(postIndexes.filter(i => i !== keepIndex));
+          app._router.stack = stack.filter((_, i) => !remove.has(i));
+          console.log(`✓ Facebook webhook duplicate POST routes cleaned before listen: kept=${keepIndex}, removed=${remove.size}`);
+        }
+      }
+
       const routes = app?._router?.stack
         ?.filter(layer => layer?.route)
         ?.map(layer => layer.route.path)
@@ -64,32 +84,5 @@ if (!express.application.__akexaWebhookFinalizer) {
   express.application.__akexaWebhookFinalizer = true;
 }
 
-
-// After server.js finishes registering routes, keep the last direct Facebook
-// webhook handlers and remove stale duplicate /webhook POST layers that can
-// intercept Meta deliveries with an unrelated authentication response.
-setImmediate(() => {
-  try {
-    const stack = express.application?._router?.stack;
-    if (!Array.isArray(stack)) return;
-
-    const webhookPostIndexes = [];
-    for (let i = 0; i < stack.length; i++) {
-      const layer = stack[i];
-      const path = layer?.route?.path;
-      const methods = layer?.route?.methods || {};
-      if (path === '/webhook' && methods.post) webhookPostIndexes.push(i);
-    }
-
-    if (webhookPostIndexes.length > 1) {
-      const keepIndex = webhookPostIndexes[webhookPostIndexes.length - 1];
-      const remove = new Set(webhookPostIndexes.filter(i => i !== keepIndex));
-      express.application._router.stack = stack.filter((_, i) => !remove.has(i));
-      console.log(`✓ Facebook webhook duplicate POST routes cleaned: kept=/webhook, removed=${remove.size}`);
-    }
-  } catch (err) {
-    console.warn('Facebook webhook route cleanup skipped:', err.message);
-  }
-});
 
 console.log('✓ Facebook webhook finalizer ready');
