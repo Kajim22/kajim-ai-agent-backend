@@ -32,8 +32,22 @@ async function subscribePageToMessenger(pageId, pageAccessToken) {
   if (!response.ok || data?.error || data?.success === false) {
     throw new Error(data?.error?.message || `Page webhook subscription failed (${response.status})`);
   }
-  console.log(`✓ Facebook Messenger messages subscription active: page=${pageId}`);
-  return data;
+
+  // Verify what Meta actually reports after the subscription call.
+  let verified = {};
+  try {
+    const verifyUrl = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}`;
+    const verifyResponse = await fetch(verifyUrl, { method: 'GET' });
+    verified = await verifyResponse.json().catch(() => ({}));
+    const appRows = Array.isArray(verified?.data) ? verified.data : [];
+    const fields = appRows.flatMap(row => Array.isArray(row?.subscribed_fields) ? row.subscribed_fields : []);
+    console.log(`✓ Facebook Messenger subscription requested: messages,messaging_postbacks,message_reads; page=${pageId}`);
+    console.log(`✓ Facebook Messenger subscription reported by Meta: ${JSON.stringify(fields)}`);
+  } catch (verifyErr) {
+    console.warn(`Facebook subscription verification could not be completed: page=${pageId}: ${verifyErr.message}`);
+  }
+
+  return { ...data, verified };
 }
 
 async function storedPageRecovery() {
