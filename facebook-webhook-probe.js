@@ -21,6 +21,15 @@ if (!express.application.__akexaFacebookWebhookProbe) {
           console.log(
             `[FB WEBHOOK PROBE] incoming: method=${req.method} path=${path} content-type=${String(req.headers['content-type'] || 'missing')} user-agent=${String(req.headers['user-agent'] || 'missing')} content-length=${String(req.headers['content-length'] || 'unknown')}`
           );
+
+          res.on('finish', () => {
+            console.log(`[FB WEBHOOK PROBE] response: method=${req.method} path=${path} status=${res.statusCode}`);
+          });
+          res.on('close', () => {
+            if (!res.writableEnded) {
+              console.log(`[FB WEBHOOK PROBE] response closed before finish: method=${req.method} path=${path} status=${res.statusCode}`);
+            }
+          });
         }
 
         next();
