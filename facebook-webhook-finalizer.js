@@ -64,4 +64,32 @@ if (!express.application.__akexaWebhookFinalizer) {
   express.application.__akexaWebhookFinalizer = true;
 }
 
+
+// After server.js finishes registering routes, keep the last direct Facebook
+// webhook handlers and remove stale duplicate /webhook POST layers that can
+// intercept Meta deliveries with an unrelated authentication response.
+setImmediate(() => {
+  try {
+    const stack = express.application?._router?.stack;
+    if (!Array.isArray(stack)) return;
+
+    const webhookPostIndexes = [];
+    for (let i = 0; i < stack.length; i++) {
+      const layer = stack[i];
+      const path = layer?.route?.path;
+      const methods = layer?.route?.methods || {};
+      if (path === '/webhook' && methods.post) webhookPostIndexes.push(i);
+    }
+
+    if (webhookPostIndexes.length > 1) {
+      const keepIndex = webhookPostIndexes[webhookPostIndexes.length - 1];
+      const remove = new Set(webhookPostIndexes.filter(i => i !== keepIndex));
+      express.application._router.stack = stack.filter((_, i) => !remove.has(i));
+      console.log(`✓ Facebook webhook duplicate POST routes cleaned: kept=/webhook, removed=${remove.size}`);
+    }
+  } catch (err) {
+    console.warn('Facebook webhook route cleanup skipped:', err.message);
+  }
+});
+
 console.log('✓ Facebook webhook finalizer ready');
