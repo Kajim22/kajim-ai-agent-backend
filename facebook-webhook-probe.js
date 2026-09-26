@@ -22,6 +22,21 @@ if (!express.application.__akexaFacebookWebhookProbe) {
             `[FB WEBHOOK PROBE] incoming: method=${req.method} path=${path} content-type=${String(req.headers['content-type'] || 'missing')} user-agent=${String(req.headers['user-agent'] || 'missing')} content-length=${String(req.headers['content-length'] || 'unknown')}`
           );
 
+          const originalStatus = res.status.bind(res);
+          const originalSendStatus = res.sendStatus.bind(res);
+          res.status = function(code) {
+            if (Number(code) === 401) {
+              console.error('[FB WEBHOOK PROBE] 401 SOURCE STACK\\n' + new Error('401 response trace').stack);
+            }
+            return originalStatus(code);
+          };
+          res.sendStatus = function(code) {
+            if (Number(code) === 401) {
+              console.error('[FB WEBHOOK PROBE] 401 SOURCE SENDSTATUS STACK\\n' + new Error('401 sendStatus trace').stack);
+            }
+            return originalSendStatus(code);
+          };
+
           res.on('finish', () => {
             console.log(`[FB WEBHOOK PROBE] response: method=${req.method} path=${path} status=${res.statusCode}`);
           });
