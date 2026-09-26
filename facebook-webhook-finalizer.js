@@ -26,67 +26,51 @@ if (!express.application.__akexaWebhookFinalizer) {
   express.application.listen = function (...args) {
     const app = this;
 
-    try {
-      const facebookGet = findRoute(app, '/webhook/facebook', 'get');
-      const facebookPost = findRoute(app, '/webhook/facebook', 'post');
+    // express-final-init-repair wraps/restores routes inside its own listen
+    // wrapper. We must let the full listen chain finish first, then clean the
+    // final Express stack in the callback scheduled after server startup.
+    const originalCallback = typeof args[args.length - 1] === 'function'
+      ? args[args.length - 1]
+      : null;
 
-      if (facebookGet && !routeAlreadyExists(app, '/webhook', 'get')) {
-        for (const layer of facebookGet.stack || []) {
-          if (typeof layer?.handle === 'function') {
-            app.get('/webhook', layer.handle);
+    if (originalCallback) {
+      args[args.length - 1] = (...callbackArgs) => {
+        try {
+          const stack = app?._router?.stack;
+          if (Array.isArray(stack)) {
+            const postIndexes = [];
+            for (let i = 0; i < stack.length; i++) {
+              const layer = stack[i];
+              if (layer?.route?.path === '/webhook' && layer.route.methods?.post) {
+                postIndexes.push(i);
+              }
+            }
+
+            // Keep only the final /webhook POST route. server.js registers
+            // facebookWebhookHandler last; earlier routes are compatibility aliases.
+            if (postIndexes.length > 1) {
+              const remove = new Set(postIndexes.slice(0, -1));
+              app._router.stack = stack.filter((_, i) => !remove.has(i));
+              console.log(`✓ Facebook webhook duplicate POST routes cleaned AFTER full listen chain: kept=${postIndexes[postIndexes.length - 1]}, removed=${remove.size}`);
+            } else {
+              console.log(`✓ Facebook webhook POST route count after full listen chain: ${postIndexes.length}`);
+            }
+
+            const routes = app._router.stack
+              .filter(layer => layer?.route)
+              .map(layer => layer.route.path)
+              .filter(path => String(path).includes('webhook'));
+            console.log('✓ Facebook webhook routes active:', JSON.stringify(routes));
           }
-        }
-        console.log('✓ Final webhook route installed: GET /webhook -> /webhook/facebook');
-      }
-
-      if (facebookPost && !routeAlreadyExists(app, '/webhook', 'post')) {
-        for (const layer of facebookPost.stack || []) {
-          if (typeof layer?.handle === 'function') {
-            app.post('/webhook', layer.handle);
-          }
-        }
-        console.log('✓ Final webhook route installed: POST /webhook -> /webhook/facebook');
-      }
-
-      // express-final-init-repair restores preloaded routes inside originalListen().
-    // Therefore route cleanup must happen after originalListen() has returned.
-    try {
-      const stackBefore = app?._router?.stack;
-      if (Array.isArray(stackBefore)) {
-        const postIndexes = [];
-        for (let i = 0; i < stackBefore.length; i++) {
-          const layer = stackBefore[i];
-          if (layer?.route?.path === '/webhook' && layer.route.methods?.post) {
-            postIndexes.push(i);
-          }
+        } catch (err) {
+          console.error('Facebook webhook final cleanup error:', err.message);
         }
 
-        // Keep ONLY the last /webhook POST route. server.js registers its real
-        // facebookWebhookHandler last, while aliases/preloaded patches are earlier.
-        if (postIndexes.length > 1) {
-          const keepIndex = postIndexes[postIndexes.length - 1];
-          const remove = new Set(postIndexes.slice(0, -1));
-          app._router.stack = stackBefore.filter((_, i) => !remove.has(i));
-          console.log(`✓ Facebook webhook duplicate POST routes cleaned AFTER route restoration: kept=${keepIndex}, removed=${remove.size}`);
-        } else {
-          console.log(`✓ Facebook webhook POST route count after restoration: ${postIndexes.length}`);
-        }
-      }
-    } catch (err) {
-      console.error('Facebook webhook route cleanup error:', err.message);
+        return originalCallback(...callbackArgs);
+      };
     }
 
-    try {
-      const routes = app?._router?.stack
-        ?.filter(layer => layer?.route)
-        ?.map(layer => layer.route.path)
-        ?.filter(path => String(path).includes('webhook'));
-      console.log('✓ Facebook webhook routes active:', JSON.stringify(routes || []));
-    } catch (err) {
-      console.error('Facebook webhook route listing error:', err.message);
-    }
-
-    return server;
+    return originalListen.apply(this, args);
   };
 
   express.application.__akexaWebhookFinalizer = true;
