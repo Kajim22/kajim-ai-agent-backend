@@ -48,47 +48,42 @@ if (!express.application.__akexaWebhookFinalizer) {
         console.log('✓ Final webhook route installed: POST /webhook -> /webhook/facebook');
       }
 
-      // Do not clean the route stack here: express-final-init-repair wraps
-      // listen() and restores preloaded routes inside originalListen().
-      // Cleaning here would therefore happen too early and be overwritten.
-    } catch (err) {
-      console.error('Facebook webhook finalizer pre-listen error:', err.message);
-    }
-
-    const server = originalListen.apply(this, args);
-
-    // express-final-init-repair has now restored all preloaded routes and
-    // server.js has already registered its real /webhook handler. At this
-    // point the final /webhook POST route is the real server.js handler.
+      // express-final-init-repair restores preloaded routes inside originalListen().
+    // Therefore route cleanup must happen after originalListen() has returned.
     try {
-      const stack = app?._router?.stack;
-      if (Array.isArray(stack)) {
+      const stackBefore = app?._router?.stack;
+      if (Array.isArray(stackBefore)) {
         const postIndexes = [];
-        for (let i = 0; i < stack.length; i++) {
-          const layer = stack[i];
+        for (let i = 0; i < stackBefore.length; i++) {
+          const layer = stackBefore[i];
           if (layer?.route?.path === '/webhook' && layer.route.methods?.post) {
             postIndexes.push(i);
           }
         }
 
+        // Keep ONLY the last /webhook POST route. server.js registers its real
+        // facebookWebhookHandler last, while aliases/preloaded patches are earlier.
         if (postIndexes.length > 1) {
           const keepIndex = postIndexes[postIndexes.length - 1];
-          const remove = new Set(postIndexes.filter(i => i !== keepIndex));
-          app._router.stack = stack.filter((_, i) => !remove.has(i));
+          const remove = new Set(postIndexes.slice(0, -1));
+          app._router.stack = stackBefore.filter((_, i) => !remove.has(i));
           console.log(`✓ Facebook webhook duplicate POST routes cleaned AFTER route restoration: kept=${keepIndex}, removed=${remove.size}`);
         } else {
           console.log(`✓ Facebook webhook POST route count after restoration: ${postIndexes.length}`);
         }
       }
+    } catch (err) {
+      console.error('Facebook webhook route cleanup error:', err.message);
+    }
 
+    try {
       const routes = app?._router?.stack
         ?.filter(layer => layer?.route)
         ?.map(layer => layer.route.path)
         ?.filter(path => String(path).includes('webhook'));
-
       console.log('✓ Facebook webhook routes active:', JSON.stringify(routes || []));
     } catch (err) {
-      console.error('Facebook webhook finalizer post-listen error:', err.message);
+      console.error('Facebook webhook route listing error:', err.message);
     }
 
     return server;
