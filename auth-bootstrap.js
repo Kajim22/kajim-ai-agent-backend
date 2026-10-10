@@ -14,8 +14,9 @@ express.application.use = function patchedUse(...args) {
     installed = true;
     originalUse.call(this, (req, res, next) => {
       const path = req.path || '';
-      const publicWebhook = path.startsWith('/telegram/webhook/') || path === '/webhook/facebook';
-      if (publicWebhook) return next();
+      const publicWebhook = path.startsWith('/telegram/webhook/') || path === '/webhook/facebook' || path === '/webhook';
+      // CORS preflight requests must reach the CORS middleware/route without user JWT.
+      if (req.method === 'OPTIONS' || publicWebhook) return next();
       return requireSupabaseUser(req, res, next);
     });
   }
