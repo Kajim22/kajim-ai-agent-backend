@@ -619,7 +619,8 @@ app.post("/telegram/webhook/:token", async (req, res) => {
     const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
     const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
     const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
-    if (!bot.orderSaved[chatId] && hasPhoneNumber) {
+    const confirmsOrder = /^(জি|জী|হ্যাঁ|হ্যা|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|yes|ok|okay)$/i.test(String(text || '').trim());
+    if (!bot.orderSaved[chatId] && (hasPhoneNumber || confirmsOrder)) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);
       if (orderInfo.complete) {
         bot.orderSaved[chatId] = true;
@@ -844,7 +845,8 @@ async function facebookWebhookHandler(req, res) {
         const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d));
         const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
         const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
-        if (!page.orderSaved[senderId] && hasPhoneNumber) {
+        const confirmsOrder = /^(জি|জী|হ্যাঁ|হ্যা|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|yes|ok|okay)$/i.test(String(text || '').trim());
+        if (!page.orderSaved[senderId] && (hasPhoneNumber || confirmsOrder)) {
           const orderInfo = await extractOrderInfo(page.histories[senderId]);
           if (orderInfo.complete) {
             page.orderSaved[senderId] = true;
