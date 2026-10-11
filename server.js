@@ -302,8 +302,11 @@ async function saveOrderAndNotify(agentId, chatId, orderInfo, notifyPlatform, no
         body: JSON.stringify({ chat_id: myChatId, text: notifyText })
       });
     }
+    console.log(`[ORDER SAVE] success platform=${notifyPlatform} agentId=${agentId} chatId=${String(chatId)}`);
+    return true;
   } catch (err) {
-    console.error('saveOrderAndNotify error:', err.message);
+    console.error(`[ORDER SAVE] failed platform=${notifyPlatform} agentId=${agentId} chatId=${String(chatId)} error=${err.message}`);
+    return false;
   }
 }
 
@@ -620,11 +623,11 @@ app.post("/telegram/webhook/:token", async (req, res) => {
     const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
     const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
     const confirmsOrder = /^(জি|জী|হ্যাঁ|হ্যা|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|yes|ok|okay)$/i.test(String(text || '').trim());
-    if (!bot.orderSaved[chatId] && (hasPhoneNumber || confirmsOrder)) {
+    if (!bot.orderSaved[chatId] && confirmsOrder) {
       const orderInfo = await extractOrderInfo(bot.histories[chatId]);
       if (orderInfo.complete) {
-        bot.orderSaved[chatId] = true;
-        await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+        const saved = await saveOrderAndNotify(bot.agentId, chatId, orderInfo, 'Telegram', token);
+        if (saved) bot.orderSaved[chatId] = true;
       }
     }
   } catch (err) {
@@ -846,12 +849,14 @@ async function facebookWebhookHandler(req, res) {
         const cleanedText = banglaToEnglishDigits.replace(/[\s-]/g, '');
         const hasPhoneNumber = /\d{10,11}/.test(cleanedText);
         const confirmsOrder = /^(জি|জী|হ্যাঁ|হ্যা|ঠিক আছে|কনফার্ম|কনফার্ম করুন|confirm|confirmed|yes|ok|okay)$/i.test(String(text || '').trim());
-        if (!page.orderSaved[senderId] && (hasPhoneNumber || confirmsOrder)) {
+        if (!page.orderSaved[senderId] && confirmsOrder) {
           const orderInfo = await extractOrderInfo(page.histories[senderId]);
           if (orderInfo.complete) {
-            page.orderSaved[senderId] = true;
-            await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
-            await notifyOwnerViaAnyTelegramBot(`🛒 নতুন অর্ডার এসেছে! (Facebook Messenger)\n\n👤 নাম: ${orderInfo.customer_name}\n📍 ঠিকানা: ${orderInfo.customer_address}\n📞 ফোন: ${orderInfo.customer_phone}\n📦 বিবরণ: ${orderInfo.order_details}`);
+            const saved = await saveOrderAndNotify(page.agentId, senderId, orderInfo, 'Facebook Messenger', null);
+            if (saved) {
+              page.orderSaved[senderId] = true;
+              await notifyOwnerViaAnyTelegramBot(`🛒 নতুন অর্ডার এসেছে! (Facebook Messenger)\n\n👤 নাম: ${orderInfo.customer_name}\n📍 ঠিকানা: ${orderInfo.customer_address}\n📞 ফোন: ${orderInfo.customer_phone}\n📦 বিবরণ: ${orderInfo.order_details}`);
+            }
           }
         }
       } catch (err) {
