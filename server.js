@@ -407,6 +407,14 @@ app.get("/orders/list", async (req, res) => {
          SELECT 1 FROM marketplace_agents ma
          WHERE ma.agent_id = o.agent_id AND ma.owner_user_id = $1
        )
+       OR EXISTS (
+         SELECT 1 FROM facebook_pages fp
+         WHERE fp.agent_id = o.agent_id AND fp.customer_user_id = $1
+       )
+       OR EXISTS (
+         SELECT 1 FROM telegram_bots tb
+         WHERE tb.agent_id = o.agent_id AND tb.customer_user_id = $1
+       )
        ORDER BY o.created_at DESC`,
       [String(user.id)]
     );
