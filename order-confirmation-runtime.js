@@ -65,22 +65,27 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
         const finalNormalized = finalOrderText.toLowerCase().replace(/[“”"'\\x60]/g, '').replace(/[\\s,،।.!?;:؛ঃ\\-_/\\\\]+/g, '');
         finalConfirmed = /^(হ্যাঁ|হ্যা|হা|জি|জ্বি|জী|জ্বী|ঠিকআছে|কনফার্ম|কনফার্মকরুন|নিশ্চিত|নিশ্চিতকরছি|অর্ডারদিন|অর্ডারকরুন|অর্ডারটাকরেদিন|করেদিন|করেদেন|confirm|confirmed|yes|ok|okay)$/.test(finalNormalized);
         const startsNewOrder = /(নতুন\\s*অর্ডার|অর্ডার\\s*(করতে|দিতে|দিন|করব|করবো|চাই)|কিনতে\\s*চাই|নিতে\\s*চাই|অর্ডার\\s*প্লেস|place\\s*an?\\s*order|i\\s*want\\s*to\\s*(buy|order)|i\\s*would\\s*like\\s*to\\s*(buy|order))/i.test(finalOrderText);
+        if (!page.activeOrderSessions) page.activeOrderSessions = {};
+        const activeOrderSession = startsNewOrder || page.activeOrderSessions[senderId] === true;
         let orderHistory = page.histories[senderId] || [];
         const priorSavedOrder = await pool.query(
           'SELECT id FROM orders WHERE agent_id = $1 AND chat_id = $2 ORDER BY created_at DESC LIMIT 1',
           [String(page.agentId), String(senderId)]
         );
-        if (startsNewOrder) {
-          // Start a clean order session; never extract customer/order fields from an older order.
+        if (activeOrderSession) {
+          // Keep multi-turn collection inside the new order session, excluding older completed orders.
           let startAt = -1;
           for (let i = orderHistory.length - 1; i >= 0; i--) {
             if (orderHistory[i]?.role === 'user' && /(অর্ডার|কিনতে|নিতে চাই|buy|order)/i.test((orderHistory[i].parts || []).map(p => p.text || '').join(' '))) { startAt = i; break; }
           }
           if (startAt >= 0) orderHistory = orderHistory.slice(startAt);
-          delete page.pendingOrderDrafts[senderId];
-          delete page.pendingOrderConfirmationKeys[senderId];
-          page.orderSaved[senderId] = false;
-          console.log(`↻ New Messenger order session started: chat_id=${senderId}`);
+          if (startsNewOrder) {
+            page.activeOrderSessions[senderId] = true;
+            delete page.pendingOrderDrafts[senderId];
+            delete page.pendingOrderConfirmationKeys[senderId];
+            page.orderSaved[senderId] = false;
+            console.log(`↻ New Messenger order session started: chat_id=${senderId}`);
+          }
         } else if (priorSavedOrder.rows[0]) {
           // An already-saved order is historical context, not an active draft.
           orderHistory = [];
@@ -93,7 +98,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
         const confirmationAlreadyAskedInHistory = orderHistory.some(item =>
           item?.role === 'model' && (item.parts || []).some(part => /অর্ডারটি কনফার্ম করবেন|কনফার্ম করতে/.test(String(part?.text || '')))
         );
-        if (finalOrderDraft?.complete && !finalConfirmed && !confirmationAlreadyAskedInHistory && !priorSavedOrder.rows[0] || (startsNewOrder && finalOrderDraft?.complete && !finalConfirmed && !confirmationAlreadyAskedInHistory)) {
+        if (finalOrderDraft?.complete && !finalConfirmed && !confirmationAlreadyAskedInHistory && (!priorSavedOrder.rows[0] || activeOrderSession)) {
           const confirmationKey = [finalOrderDraft.customer_name, finalOrderDraft.customer_address, finalOrderDraft.customer_phone, finalOrderDraft.order_details]
             .map(v => String(v || '').trim().toLowerCase()).join('|');
           const alreadyAskedForSameDraft = page.pendingOrderConfirmationKeys[senderId] === confirmationKey;
