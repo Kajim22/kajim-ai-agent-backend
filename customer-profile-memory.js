@@ -71,7 +71,24 @@ function patch(){
   };
 }
 
-express.application.get.call(express.application,'/customer/profile/:agentId/:platform/:chatId',async(req,res)=>{try{res.json({success:true,profile:await getProfile(req.params.agentId,req.params.platform,req.params.chatId)});}catch(e){res.json({success:false,error:e.message});}});
+async function customerProfileAuthorized(req,agentId){
+  const auth=String(req.headers.authorization||'');
+  if(!auth.startsWith('Bearer '))return false;
+  try{
+    const base=process.env.SUPABASE_URL||'https://yhspipyrgdcdfqqxxges.supabase.co';
+    const key=process.env.SUPABASE_ANON_KEY||process.env.SUPABASE_KEY||'sb_publishable_IcyDHTLjyPPspvcgnYZZiw_q1lUn8QW';
+    const u=await fetch(base+'/auth/v1/user',{headers:{apikey:key,Authorization:auth}});
+    if(!u.ok)return false;const user=await u.json();if(!user?.id)return false;
+    const own=await pool.query('SELECT id FROM user_agents WHERE id=$1 AND owner_user_id=$2 LIMIT 1',[String(agentId),String(user.id)]);
+    if(own.rows[0])return true;
+    const admin=await pool.query('SELECT user_id FROM platform_admins WHERE user_id=$1 LIMIT 1',[String(user.id)]);
+    return !!admin.rows[0];
+  }catch(e){console.error('[CUSTOMER PROFILE] auth error:',e.message);return false;}
+}
+express.application.get.call(express.application,'/customer/profile/:agentId/:platform/:chatId',async(req,res)=>{try{
+  if(!await customerProfileAuthorized(req,req.params.agentId))return res.status(403).json({success:false,error:'Customer profile access denied'});
+  res.json({success:true,profile:await getProfile(req.params.agentId,req.params.platform,req.params.chatId)});
+}catch(e){res.status(500).json({success:false,error:'Customer profile load failed'});}});
 express.application.post.call(express.application,'/customer/profile/upsert',async(req,res)=>{try{const{agentId,platform,chatId,...fields}=req.body;await upsertProfile(agentId,platform,chatId,fields);res.json({success:true});}catch(e){res.json({success:false,error:e.message});}});
 initCustomerMemory().catch(e=>console.error('Customer memory init error:',e.message));
 patch();
