@@ -66,7 +66,13 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
         finalConfirmed = /^(হ্যাঁ|হ্যা|হা|জি|জ্বি|জী|জ্বী|ঠিকআছে|কনফার্ম|কনফার্মকরুন|নিশ্চিত|নিশ্চিতকরছি|অর্ডারদিন|অর্ডারকরুন|অর্ডারটাকরেদিন|করেদিন|করেদেন|confirm|confirmed|yes|ok|okay)$/.test(finalNormalized);
         finalOrderDraft = page.pendingOrderDrafts[senderId] || null;
         if (!finalOrderDraft) finalOrderDraft = await extractOrderInfo(page.histories[senderId]);
-        if (finalOrderDraft?.complete && !finalConfirmed) {
+        // Do not force the same order summary on every later customer message.
+        // Once the confirmation prompt exists in this conversation, normal AI
+        // replies must handle product questions and all other follow-up messages.
+        const confirmationAlreadyAskedInHistory = (page.histories[senderId] || []).some(item =>
+          item?.role === 'model' && (item.parts || []).some(part => /অর্ডারটি কনফার্ম করবেন|কনফার্ম করতে/.test(String(part?.text || '')))
+        );
+        if (finalOrderDraft?.complete && !finalConfirmed && !confirmationAlreadyAskedInHistory) {
           const confirmationKey = [finalOrderDraft.customer_name, finalOrderDraft.customer_address, finalOrderDraft.customer_phone, finalOrderDraft.order_details]
             .map(v => String(v || '').trim().toLowerCase()).join('|');
           const alreadyAskedForSameDraft = page.pendingOrderConfirmationKeys[senderId] === confirmationKey;
