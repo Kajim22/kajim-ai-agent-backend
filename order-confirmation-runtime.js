@@ -84,7 +84,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
             delete page.pendingOrderDrafts[senderId];
             delete page.pendingOrderConfirmationKeys[senderId];
             page.orderSaved[senderId] = false;
-            console.log(`↻ New Messenger order session started: chat_id=${senderId}`);
+            console.log('New Messenger order session started: chat_id=' + senderId);
           }
         } else if (priorSavedOrder.rows[0]) {
           // An already-saved order is historical context, not an active draft.
