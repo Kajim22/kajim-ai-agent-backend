@@ -35,10 +35,11 @@ async function getProfile(agentId,platform,chatId){
   const r=await pool.query('SELECT * FROM customer_profiles WHERE agent_id=$1 AND platform=$2 AND chat_id=$3 LIMIT 1',[agentId,platform,String(chatId)]);
   return r.rows[0]||null;
 }
-function profilePrompt(p){
+function profilePrompt(p, orders=[]){
   if(!p)return '';
   const a=[]; if(p.customer_name)a.push(`নাম: ${p.customer_name}`); if(p.customer_phone)a.push(`ফোন: ${p.customer_phone}`); if(p.customer_address)a.push(`ঠিকানা: ${p.customer_address}`); if(p.preferences)a.push(`পছন্দ: ${p.preferences}`); if(p.needs)a.push(`প্রয়োজন: ${p.needs}`);
-  return a.length?`\n\nCustomer Memory (শুধু প্রাসঙ্গিক হলে ব্যবহার করো):\n${a.map(x=>'- '+x).join('\n')}\nগ্রাহকের দেওয়া তথ্য অনুমান করে তৈরি কোরো না।`:'';
+  if(orders.length)a.push('সাম্প্রতিক কেনাকাটা: '+orders.map(o=>String(o.order_details||'').slice(0,180)).join(' | '));
+  return a.length?`\n\nCustomer Memory (শুধু প্রাসঙ্গিক হলে ব্যবহার করো):\n${a.map(x=>'- '+x).join('\n')}\nগ্রাহকের দেওয়া তথ্য অনুমান করে তৈরি কোরো না। পুরোনো অর্ডারকে নতুন অর্ডার ধরে নিও না; গ্রাহক নতুন অর্ডার চাইলে তবেই নতুন অর্ডার প্রক্রিয়া শুরু করো।`:'';
 }
 function patch(){
   if(patched)return; patched=true;
@@ -65,7 +66,8 @@ function patch(){
     const store=context.getStore(); if(!store?.agentId||!store?.chatId)return originalFetch(url,options);
     try{
       const body=JSON.parse(String(options.body)); const p=await getProfile(store.agentId,store.platform,store.chatId);
-      if(p){ const base=body?.system_instruction?.parts?.[0]?.text||''; body.system_instruction={parts:[{text:base+profilePrompt(p)}]}; }
+      const orderRows=await pool.query('SELECT order_details,created_at FROM orders WHERE agent_id=$1 AND chat_id=$2 ORDER BY created_at DESC LIMIT 5',[String(store.agentId),String(store.chatId)]);
+      if(p||orderRows.rows.length){ const base=body?.system_instruction?.parts?.[0]?.text||''; body.system_instruction={parts:[{text:base+profilePrompt(p,orderRows.rows)}]}; }
       return originalFetch(url,{...options,body:JSON.stringify(body)});
     }catch(e){console.error('Customer memory injection error:',e.message); return originalFetch(url,options);}
   };
