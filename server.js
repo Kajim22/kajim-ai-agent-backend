@@ -120,6 +120,8 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'pending'");
+    await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS facebook_pages (
         page_id TEXT PRIMARY KEY,
@@ -926,6 +928,27 @@ async function restoreBots() {
     console.error('Restore bots error:', err.message);
   }
 }
+
+app.patch('/orders/:orderId/delivery-status', async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    if (!user?.id) return res.status(401).json({ success: false, error: 'Login required.' });
+    const status = String(req.body?.status || '').toLowerCase();
+    if (!['pending', 'shipped', 'delivered', 'cancelled'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid delivery status.' });
+    const found = await pool.query('SELECT id, agent_id FROM orders WHERE id = $1 LIMIT 1', [String(req.params.orderId)]);
+    if (!found.rows[0]) return res.status(404).json({ success: false, error: 'Order not found.' });
+    const order = found.rows[0];
+    const access = await pool.query('SELECT id FROM user_agents WHERE id = $1 AND owner_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]);
+    const admin = await pool.query('SELECT user_id FROM platform_admins WHERE user_id = $1 LIMIT 1', [String(user.id)]);
+    if (!access.rows[0] && !admin.rows[0]) return res.status(403).json({ success: false, error: 'Agent access denied.' });
+    if (status === 'delivered') await pool.query("UPDATE orders SET delivery_status = $2, delivered_at = COALESCE(delivered_at, NOW()) WHERE id = $1", [order.id, status]);
+    else await pool.query('UPDATE orders SET delivery_status = $2 WHERE id = $1', [order.id, status]);
+    res.json({ success: true, deliveryStatus: status });
+  } catch (err) {
+    console.error('Delivery status update error:', err.message);
+    res.status(500).json({ success: false, error: 'Delivery status update failed.' });
+  }
+});
 
 app.listen(port, async () => {
   console.log(`Server running on port ${port}`);
