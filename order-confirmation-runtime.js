@@ -20,20 +20,20 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
 
     // Persist verified order identity into long-term customer memory.
     try {
-      await pool.query(`CREATE TABLE IF NOT EXISTS customer_profiles (
+      await pool.query(\`CREATE TABLE IF NOT EXISTS customer_profiles (
         id SERIAL PRIMARY KEY, agent_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,
         customer_name TEXT, customer_phone TEXT, customer_address TEXT, preferences TEXT, needs TEXT,
         created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(agent_id, platform, chat_id)
-      )`);
-      await pool.query(`INSERT INTO customer_profiles
+       )\`);
+      await pool.query(\`INSERT INTO customer_profiles
         (agent_id, platform, chat_id, customer_name, customer_phone, customer_address)
         VALUES ($1,$2,$3,$4,$5,$6)
         ON CONFLICT (agent_id, platform, chat_id) DO UPDATE SET
           customer_name=COALESCE(NULLIF(EXCLUDED.customer_name,''),customer_profiles.customer_name),
           customer_phone=COALESCE(NULLIF(EXCLUDED.customer_phone,''),customer_profiles.customer_phone),
           customer_address=COALESCE(NULLIF(EXCLUDED.customer_address,''),customer_profiles.customer_address),
-          updated_at=NOW()`,
+          updated_at=NOW()\`,
         [String(agentId), String(notifyPlatform).toLowerCase().includes('telegram')?'telegram':'facebook',
          String(chatId), String(orderInfo.customer_name||''), String(orderInfo.customer_phone||''), String(orderInfo.customer_address||'')]);
       console.log('✓ Customer memory updated from confirmed order');
