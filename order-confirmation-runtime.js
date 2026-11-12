@@ -114,7 +114,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
   source = source.slice(0, replyPos + replyAnchor.length) + guard + source.slice(replyPos + replyAnchor.length);
 
   const oldStart = source.indexOf('        const banglaToEnglishDigits = text.replace(/[০-৯]/g, d => \'০১২৩৪৫৬৭৮৯\'.indexOf(d));', webhookPos);
-  const oldIf = source.indexOf('        if (!page.orderSaved[senderId] && hasPhoneNumber) {', oldStart);
+  const oldIf = source.indexOf('        if (!page.orderSaved[senderId] && confirmsOrder) {', oldStart);
   const catchMarker = source.indexOf('\n      } catch (err) {', oldIf);
   if (oldStart < 0 || oldIf < 0 || catchMarker < 0) throw new Error('Final order runtime: Facebook save block not found');
 
