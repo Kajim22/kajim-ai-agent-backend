@@ -123,6 +123,7 @@ Module._extensions['.js'] = function finalOrderRuntimeLoader(module, filename) {
           await saveOrderAndNotify(page.agentId, senderId, finalOrderDraft, 'Facebook Messenger', null);
           delete page.pendingOrderDrafts[senderId];
           delete page.pendingOrderConfirmationKeys[senderId];
+          if (page.activeOrderSessions) delete page.activeOrderSessions[senderId];
           console.log(\`✓ Confirmed Messenger order saved and notified: chat_id=\${senderId}\`);
         } else if (!page.orderSaved[senderId] && finalOrderDraft?.complete && !finalConfirmed) {
           console.log(\`⏳ Waiting for Messenger confirmation: chat_id=\${senderId}\`);
