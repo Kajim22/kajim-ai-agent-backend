@@ -824,7 +824,18 @@ async function facebookWebhookHandler(req, res) {
       }
       try {
         const knowledgeText = await getKnowledgeText(page.agentId);
-        const fullPrompt = page.systemPrompt + knowledgeText;
+        const orderConversationRules = `
+
+অর্ডার নেওয়ার বাধ্যতামূলক নিয়ম:
+- গ্রাহক "আমি নতুন অর্ডার করতে চাই" বা সমজাতীয় কথা বললে নতুন অর্ডার শুরু হয়েছে ধরে নাও।
+- এরপর গ্রাহক যে নাম লিখবে, সেটি তার নিজের দেওয়া নাম হিসেবে গ্রহণ করবে। নামটি Knowledge Base, অফিসিয়াল তথ্য, কর্মচারীর তালিকা বা অন্য কোথাও আছে কি না যাচাই করবে না।
+- গ্রাহকের নামের ভিত্তিতে তাকে "ভাই" বলে সম্বোধন করে নাম অস্বীকার করবে না; শুধু পরবর্তী প্রয়োজনীয় তথ্য (ঠিকানা/ফোন) চাইবে।
+- অর্ডার সংগ্রহের সময় প্রতিটি মেসেজকে আগের প্রশ্নের উত্তর হিসেবে বুঝবে। একবারে একটি অনুপস্থিত তথ্য চাইবে।
+- অর্ডার কনফার্ম করার আগে পণ্য, পরিমাণ, নাম, ঠিকানা ও ফোন স্পষ্টভাবে নিশ্চিত করবে।
+- অর্ডার সংগ্রহের বাইরে পণ্য, দাম, স্টক, ডেলিভারি ও অন্যান্য সাধারণ প্রশ্নের সরাসরি উত্তর দেবে। অকারণে আগের অর্ডার কনফার্মেশন পুনরাবৃত্তি করবে না।
+- Knowledge Base-এ তথ্য না থাকলে অনুমান করবে না; বিনয়ের সঙ্গে জানাবে যে তথ্যটি যাচাই করে জানাতে হবে।
+`;
+        const fullPrompt = page.systemPrompt + knowledgeText + orderConversationRules;
         const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
