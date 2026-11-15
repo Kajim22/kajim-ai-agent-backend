@@ -893,11 +893,13 @@ app.post("/webhook", facebookWebhookHandler);
 app.post("/webhook/facebook", facebookWebhookHandler);
 
 app.get("/facebook/list", async (req, res) => {
+  const auth = await requirePlatformAdmin(req);
+  if (!auth.ok) return res.status(auth.status).json({ success: false, error: auth.error });
   try {
-    const result = await pool.query("SELECT page_id, system_prompt, agent_id, created_at FROM facebook_pages ORDER BY created_at DESC");
-    res.json(result.rows);
+    const result = await pool.query("SELECT page_id, agent_id, customer_user_id, marketplace_agent_id, created_at FROM facebook_pages ORDER BY created_at DESC");
+    res.json({ success: true, pages: result.rows });
   } catch (err) {
-    res.json({ error: err.message });
+    res.status(500).json({ success: false, error: "Facebook page list could not be loaded." });
   }
 });
 
@@ -938,9 +940,16 @@ app.patch('/orders/:orderId/delivery-status', async (req, res) => {
     const found = await pool.query('SELECT id, agent_id FROM orders WHERE id = $1 LIMIT 1', [String(req.params.orderId)]);
     if (!found.rows[0]) return res.status(404).json({ success: false, error: 'Order not found.' });
     const order = found.rows[0];
-    const access = await pool.query('SELECT id FROM user_agents WHERE id = $1 AND owner_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]);
-    const admin = await pool.query('SELECT user_id FROM platform_admins WHERE user_id = $1 LIMIT 1', [String(user.id)]);
-    if (!access.rows[0] && !admin.rows[0]) return res.status(403).json({ success: false, error: 'Agent access denied.' });
+    const [access, marketplaceOwner, connectedFacebook, connectedTelegram, admin] = await Promise.all([
+      pool.query('SELECT id FROM user_agents WHERE id = $1 AND owner_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]),
+      pool.query('SELECT id FROM marketplace_agents WHERE agent_id = $1 AND owner_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]),
+      pool.query('SELECT page_id FROM facebook_pages WHERE agent_id = $1 AND customer_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]),
+      pool.query('SELECT bot_token FROM telegram_bots WHERE agent_id = $1 AND customer_user_id = $2 LIMIT 1', [String(order.agent_id), String(user.id)]),
+      pool.query('SELECT user_id FROM platform_admins WHERE user_id = $1 LIMIT 1', [String(user.id)])
+    ]);
+    if (!access.rows[0] && !marketplaceOwner.rows[0] && !connectedFacebook.rows[0] && !connectedTelegram.rows[0] && !admin.rows[0]) {
+      return res.status(403).json({ success: false, error: 'Agent access denied.' });
+    }
     if (status === 'delivered') await pool.query("UPDATE orders SET delivery_status = $2, delivered_at = COALESCE(delivered_at, NOW()) WHERE id = $1", [order.id, status]);
     else await pool.query('UPDATE orders SET delivery_status = $2 WHERE id = $1', [order.id, status]);
     res.json({ success: true, deliveryStatus: status });
