@@ -67,7 +67,7 @@ async function listConversations(agentId, userId, platform = '', q = '', limit =
       MAX(cm.created_at) AS last_message_at,
       COUNT(*)::int AS message_count,
       COUNT(*) FILTER (WHERE cm.role='user')::int AS customer_messages,
-      COUNT(*) FILTER (WHERE cm.role='model')::int AS agent_messages,
+      COUNT(*) FILTER (WHERE cm.role IN ('model','human'))::int AS agent_messages,
       (ARRAY_AGG(cm.content ORDER BY cm.created_at DESC))[1] AS last_message
     FROM chat_messages cm
     LEFT JOIN facebook_conversation_modes fcm
