@@ -819,6 +819,21 @@ async function facebookWebhookHandler(req, res) {
       if (!page.histories[senderId]) page.histories[senderId] = await loadChatHistory('facebook', senderId);
       page.histories[senderId].push({ role: "user", parts: userParts });
       await saveChatMessage('facebook', senderId, page.agentId, 'user', text);
+      // Human takeover: persist inbound message, but do not invoke AI when paused.
+      try {
+        const aiControl = await pool.query(
+          `SELECT ai_enabled FROM messenger_inbox_controls
+           WHERE page_id=$1 AND chat_id IN ('*',$2)
+           ORDER BY CASE WHEN chat_id=$2 THEN 0 ELSE 1 END LIMIT 1`,
+          [String(pageId), String(senderId)]
+        );
+        if (aiControl.rows.length && aiControl.rows[0].ai_enabled === false) {
+          console.log(`Messenger AI paused; inbound message saved: page=${pageId}, chat=${senderId}`);
+          continue;
+        }
+      } catch (controlError) {
+        if (controlError.code !== '42P01') console.error('Messenger AI control lookup failed:', controlError.message);
+      }
       const API_KEY = process.env.GEMINI_API_KEY;
       if (!API_KEY) {
         console.error('Facebook bot error: GEMINI_API_KEY is not configured');
