@@ -787,16 +787,19 @@ async function getFacebookConversationMode(pageId, chatId) {
 }
 
 async function getOwnedFacebookPage(userId, agentId, pageId, marketplaceAgentId) {
-  const access = await getAgentAccess(userId, agentId, marketplaceAgentId || null);
-  if (!access.allowed) return { error: 'Agent access denied.', status: 403 };
   const result = await pool.query(
-    `SELECT page_id, page_access_token, agent_id, customer_user_id
+    `SELECT page_id, page_access_token, agent_id, customer_user_id, marketplace_agent_id
        FROM facebook_pages
       WHERE page_id = $1 AND agent_id = $2 AND customer_user_id = $3
       LIMIT 1`,
     [String(pageId), String(agentId), String(userId)]
   );
   if (!result.rows[0]) return { error: 'Facebook Page not found for this account and agent.', status: 404 };
+  // Use the connected Page's stored Marketplace Agent ID when older clients
+  // do not include it in the request body/query.
+  const effectiveMarketplaceAgentId = marketplaceAgentId || result.rows[0].marketplace_agent_id || null;
+  const access = await getAgentAccess(userId, agentId, effectiveMarketplaceAgentId);
+  if (!access.allowed) return { error: 'Agent access denied.', status: 403 };
   return { page: result.rows[0], access };
 }
 
