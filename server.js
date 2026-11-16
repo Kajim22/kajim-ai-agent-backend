@@ -824,7 +824,7 @@ async function facebookWebhookHandler(req, res) {
         const aiControl = await pool.query(
           `SELECT ai_enabled FROM messenger_inbox_controls
            WHERE page_id=$1 AND chat_id IN ('*',$2)
-           ORDER BY CASE WHEN chat_id=$2 THEN 0 ELSE 1 END LIMIT 1`,
+           ORDER BY CASE WHEN chat_id='*' THEN 0 ELSE 1 END LIMIT 1`,
           [String(pageId), String(senderId)]
         );
         if (aiControl.rows.length && aiControl.rows[0].ai_enabled === false) {
