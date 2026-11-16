@@ -132,9 +132,5 @@ originalGet.call(express.application, '/conversations/:agentId/:platform/:chatId
   } catch(e) { console.error('Inbox messages error:',e.message);res.status(500).json({ success:false, error:'Conversation messages could not be loaded.' }); }
 });
 
-async function init() {
-  await pool.query('ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS page_id TEXT');
-  await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_messages_agent_platform_chat_created ON chat_messages(agent_id, platform, chat_id, created_at DESC)');
-  console.log('✓ Authenticated Page-aware Conversations Inbox API ready');
-}
-init().catch(e => console.error('Conversations inbox init error:', e.message));
+// Database migrations are run by server.js after the main tables are created.
+console.log('✓ Authenticated Page-aware Conversations Inbox routes registered');
