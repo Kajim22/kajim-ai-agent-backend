@@ -55,7 +55,7 @@ originalGet.call(express.application,'/conversations/:agentId/facebook',async(re
       (ARRAY_AGG(m.content ORDER BY m.created_at DESC))[1] last_message,
       COALESCE((SELECT c.ai_enabled FROM messenger_inbox_controls c
        WHERE c.page_id=$2 AND c.chat_id IN ('*',m.chat_id)
-       ORDER BY CASE WHEN c.chat_id=m.chat_id THEN 0 ELSE 1 END LIMIT 1),TRUE) ai_enabled
+       ORDER BY CASE WHEN c.chat_id='*' THEN 0 ELSE 1 END LIMIT 1),TRUE) ai_enabled
       FROM chat_messages m WHERE m.agent_id=$1 AND m.platform='facebook'
       AND ($3='' OR m.chat_id ILIKE $3) GROUP BY m.chat_id
       ORDER BY MAX(m.created_at) DESC LIMIT $4`,
