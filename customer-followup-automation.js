@@ -89,6 +89,8 @@ express.application.post.call(express.application,'/customers/followup-optout',a
   try{
     const {agentId,chatId}=req.body||{};const platform=String(req.body?.platform||'').toLowerCase();
     if(!agentId||!chatId||!['facebook','telegram'].includes(platform))return res.status(400).json({success:false,error:'agentId, platform and chatId required'});
+    const user=await authUser(req);if(!user?.id)return res.status(401).json({success:false,error:'Login required'});
+    if(!await canManage(user.id,agentId))return res.status(403).json({success:false,error:'Agent access denied'});
     await pool.query('UPDATE orders SET followup_opted_out=TRUE WHERE agent_id=$1 AND chat_id=$2',[String(agentId),String(chatId)]);
     await pool.query("UPDATE customer_followups SET status='cancelled' WHERE agent_id=$1 AND chat_id=$2 AND status='pending'",[String(agentId),String(chatId)]);
     res.json({success:true});
