@@ -15,7 +15,8 @@ function isStopMessage(value) {
   return STOP_RE.test(text);
 }
 async function optOutCustomer(agentId, platform, chatId) {
-  if (!agentId || !chatId || !ready) return false;
+  if (!agentId || !chatId) return false;
+  if (!ready) await init();
   await pool.query('UPDATE orders SET followup_opted_out=TRUE WHERE agent_id=$1 AND chat_id=$2', [String(agentId), String(chatId)]);
   await pool.query("UPDATE customer_followups SET status='cancelled' WHERE agent_id=$1 AND chat_id=$2 AND status='pending'", [String(agentId), String(chatId)]);
   console.log('[FOLLOWUP OPT-OUT] customer opted out: platform=' + platform + ' agent=' + agentId);
