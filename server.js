@@ -217,7 +217,7 @@ async function loadChatHistory(platform, chatId, agentId = null, pageId = null) 
         ORDER BY created_at ASC LIMIT 20`,
       [platform, String(chatId), agentId ? String(agentId) : null, pageId ? String(pageId) : null]
     );
-    return result.rows.map(r => ({ role: r.role, parts: [{ text: r.content }] }));
+    return result.rows.map(r => ({ role: r.role === 'human' ? 'model' : r.role, parts: [{ text: r.content }] }));
   } catch (err) {
     console.error('loadChatHistory error:', err.message);
     return [];
@@ -860,7 +860,7 @@ app.post('/facebook/manual-reply', async (req, res) => {
     if (mode !== 'manual') return res.status(409).json({ success: false, error: 'এই conversation এখন AI Mode-এ আছে। আগে Manual Mode চালু করুন।' });
     const page = { pageAccessToken: owned.page.page_access_token };
     await sendFacebookMessage(page, String(chatId), { text });
-    await saveChatMessage('facebook', String(chatId), String(agentId), 'model', text, pageId);
+    await saveChatMessage('facebook', String(chatId), String(agentId), 'human', text, pageId);
     return res.json({ success: true, message: 'Manual reply sent.' });
   } catch (err) {
     console.error('Facebook manual reply error:', err.message);
