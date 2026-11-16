@@ -4,6 +4,25 @@
 const express = require('express');
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://yhspipyrgdcdfqqxxges.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || 'sb_publishable_IcyDHTLjyPPspvcgnYZZiw_q1lUn8QW';
+async function authorizeAgent(req, agentId) {
+  const auth = String(req.headers.authorization || '');
+  if (!auth.startsWith('Bearer ')) return false;
+  try {
+    const response = await fetch(SUPABASE_URL + '/auth/v1/user', { headers: { apikey: SUPABASE_KEY, Authorization: auth } });
+    if (!response.ok) return false;
+    const user = await response.json();
+    if (!user?.id) return false;
+    const [owner, marketplace, connected, admin] = await Promise.all([
+      pool.query('SELECT id FROM user_agents WHERE id=$1 AND owner_user_id=$2 LIMIT 1', [String(agentId), String(user.id)]),
+      pool.query('SELECT id FROM marketplace_agents WHERE agent_id=$1 AND owner_user_id=$2 LIMIT 1', [String(agentId), String(user.id)]),
+      pool.query('SELECT page_id FROM facebook_pages WHERE agent_id=$1 AND customer_user_id=$2 UNION ALL SELECT bot_token AS page_id FROM telegram_bots WHERE agent_id=$1 AND customer_user_id=$2 LIMIT 1', [String(agentId), String(user.id)]),
+      pool.query('SELECT user_id FROM platform_admins WHERE user_id=$1 LIMIT 1', [String(user.id)])
+    ]);
+    return !!(owner.rows[0] || marketplace.rows[0] || connected.rows[0] || admin.rows[0]);
+  } catch (error) { console.error('Order notification auth error:', error.message); return false; }
+}
 
 function orderNotificationPayload(row) {
   return {
@@ -45,7 +64,8 @@ global.notifyOrderCreated = async function notifyOrderCreated(row) {
 express.application.get.call(express.application, '/orders/notifications/:agentId', async (req, res) => {
   try {
     const agentId = String(req.params.agentId || '').trim();
-    if (!agentId) return res.json({ success: false, error: 'agentId প্রয়োজন' });
+    if (!agentId) return res.status(400).json({ success: false, error: 'agentId প্রয়োজন' });
+    if (!await authorizeAgent(req, agentId)) return res.status(403).json({ success: false, error: 'Order notification access denied' });
 
     const rawSinceId = Number(req.query.sinceId || 0);
     const sinceId = Number.isFinite(rawSinceId) && rawSinceId >= 0 ? rawSinceId : 0;
@@ -61,7 +81,7 @@ express.application.get.call(express.application, '/orders/notifications/:agentI
     res.json({ success: true, orders: result.rows.map(orderNotificationPayload) });
   } catch (err) {
     console.error('Order notification polling error:', err.message);
-    res.json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Order notification polling failed' });
   }
 });
 
