@@ -11,7 +11,7 @@ let ready = false, busy = false;
 const originalPost = express.application.post;
 const STOP_RE = /^(?:stop|unsubscribe|cancel|বন্ধ|বন্ধ করুন|আর মেসেজ পাঠাবেন না|আর মেসেজ চাই না|মেসেজ বন্ধ করুন|আর যোগাযোগ করবেন না)$/i;
 function isStopMessage(value) {
-  const text = String(value || '').trim().toLowerCase().replace(/[.!。！]+$/g, '').replace(/\\s+/g, ' ');
+  const text = String(value || '').trim().toLowerCase().replace(/[.!。！]+$/g, '').replace(/\s+/g, ' ');
   return STOP_RE.test(text);
 }
 async function optOutCustomer(agentId, platform, chatId) {
