@@ -71,7 +71,7 @@ originalGet.call(express.application,'/conversations/:agentId/facebook/:chatId',
     const limit=Math.min(Math.max(Number(req.query.limit)||100,1),200);
     const [m,c]=await Promise.all([
       pool.query("SELECT id,role,content,created_at FROM chat_messages WHERE agent_id=$1 AND platform='facebook' AND chat_id=$2 ORDER BY created_at DESC LIMIT $3",[agentId,chatId,limit]),
-      pool.query("SELECT ai_enabled FROM messenger_inbox_controls WHERE page_id=$1 AND chat_id IN ('*',$2) ORDER BY CASE WHEN chat_id=$2 THEN 0 ELSE 1 END LIMIT 1",[pageId,chatId])
+      pool.query("SELECT ai_enabled FROM messenger_inbox_controls WHERE page_id=$1 AND chat_id IN ('*',$2) ORDER BY CASE WHEN chat_id='*' THEN 0 ELSE 1 END LIMIT 1",[pageId,chatId])
     ]);
     res.json({success:true,messages:m.rows.reverse(),ai_enabled:c.rows[0]?.ai_enabled ?? true});
   } catch(e) { console.error('Inbox messages:',e.message); res.status(500).json({success:false,error:'Messages load failed'}); }
@@ -82,6 +82,11 @@ originalPost.call(express.application,'/conversations/:agentId/facebook/:chatId/
     const pageId=clean(req.body?.pageId,100),message=clean(req.body?.message,2000);
     if(!pageId||!message) return res.status(400).json({success:false,error:'pageId and message required'});
     const access=await ownedPage(req,res,agentId,pageId); if(!access) return;
+    // Manual takeover automatically pauses AI for this conversation.
+    await pool.query(`INSERT INTO messenger_inbox_controls(page_id,chat_id,ai_enabled,updated_by)
+      VALUES($1,$2,FALSE,$3) ON CONFLICT(page_id,chat_id) DO UPDATE
+      SET ai_enabled=FALSE,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+      [pageId,chatId,access.user.id]);
     const graph=process.env.FB_GRAPH_VERSION||'v26.0';
     const url=`https://graph.facebook.com/${graph}/me/messages?access_token=${encodeURIComponent(access.page.page_access_token)}`;
     const fb=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient:{id:chatId},message:{text:message}})});
