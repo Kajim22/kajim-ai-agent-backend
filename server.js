@@ -151,6 +151,7 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS page_id TEXT`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS facebook_conversation_modes (
         page_id TEXT NOT NULL,
@@ -195,22 +196,26 @@ async function getKnowledgeText(agentId) {
   }
 }
 
-async function saveChatMessage(platform, chatId, agentId, role, content) {
+async function saveChatMessage(platform, chatId, agentId, role, content, pageId = null) {
   try {
     await pool.query(
-      "INSERT INTO chat_messages (platform, chat_id, agent_id, role, content) VALUES ($1, $2, $3, $4, $5)",
-      [platform, String(chatId), agentId, role, content]
+      "INSERT INTO chat_messages (platform, chat_id, agent_id, role, content, page_id) VALUES ($1, $2, $3, $4, $5, $6)",
+      [platform, String(chatId), agentId, role, content, pageId ? String(pageId) : null]
     );
   } catch (err) {
     console.error('saveChatMessage error:', err.message);
   }
 }
 
-async function loadChatHistory(platform, chatId) {
+async function loadChatHistory(platform, chatId, agentId = null, pageId = null) {
   try {
     const result = await pool.query(
-      "SELECT role, content FROM chat_messages WHERE platform = $1 AND chat_id = $2 ORDER BY created_at ASC LIMIT 20",
-      [platform, String(chatId)]
+      `SELECT role, content FROM chat_messages
+        WHERE platform = $1 AND chat_id = $2
+          AND ($3::text IS NULL OR agent_id = $3)
+          AND ($4::text IS NULL OR page_id = $4)
+        ORDER BY created_at ASC LIMIT 20`,
+      [platform, String(chatId), agentId ? String(agentId) : null, pageId ? String(pageId) : null]
     );
     return result.rows.map(r => ({ role: r.role, parts: [{ text: r.content }] }));
   } catch (err) {
@@ -855,7 +860,7 @@ app.post('/facebook/manual-reply', async (req, res) => {
     if (mode !== 'manual') return res.status(409).json({ success: false, error: 'এই conversation এখন AI Mode-এ আছে। আগে Manual Mode চালু করুন।' });
     const page = { pageAccessToken: owned.page.page_access_token };
     await sendFacebookMessage(page, String(chatId), { text });
-    await saveChatMessage('facebook', String(chatId), String(agentId), 'model', text);
+    await saveChatMessage('facebook', String(chatId), String(agentId), 'model', text, pageId);
     return res.json({ success: true, message: 'Manual reply sent.' });
   } catch (err) {
     console.error('Facebook manual reply error:', err.message);
@@ -925,9 +930,9 @@ async function facebookWebhookHandler(req, res) {
         console.error('FB attachment error:', err.message);
       }
       userParts.push({ text });
-      if (!page.histories[senderId]) page.histories[senderId] = await loadChatHistory('facebook', senderId);
+      if (!page.histories[senderId]) page.histories[senderId] = await loadChatHistory('facebook', senderId, page.agentId, pageId);
       page.histories[senderId].push({ role: "user", parts: userParts });
-      await saveChatMessage('facebook', senderId, page.agentId, 'user', text);
+      await saveChatMessage('facebook', senderId, page.agentId, 'user', text, pageId);
       const conversationMode = await getFacebookConversationMode(pageId, senderId);
       if (conversationMode === 'manual') {
         console.log(`Facebook AI paused for manual conversation: page=${pageId}, customer=${senderId}`);
@@ -974,7 +979,7 @@ async function facebookWebhookHandler(req, res) {
         }
         page.histories[senderId].push({ role: "model", parts: [{ text: reply }] });
         if (page.histories[senderId].length > 20) page.histories[senderId] = page.histories[senderId].slice(-20);
-        await saveChatMessage('facebook', senderId, page.agentId, 'model', reply);
+        await saveChatMessage('facebook', senderId, page.agentId, 'model', reply, pageId);
         const imageMatch = reply.match(/\[IMAGE:\s*(https?:\/\/[^\]\s]+)\]/);
         let imageUrl = null;
         if (imageMatch) {
