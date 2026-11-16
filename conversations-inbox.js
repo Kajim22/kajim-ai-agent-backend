@@ -37,6 +37,13 @@ async function init() {
 }
 init().catch(e=>console.error('Messenger Inbox DB init failed:',e.message));
 
+originalGet.call(express.application,'/conversations/:agentId/facebook-pages',async(req,res)=>{
+  try {
+    const user=await auth(req); if(!user) return res.status(401).json({success:false,error:'Login required'});
+    const r=await pool.query('SELECT page_id,agent_id FROM facebook_pages WHERE agent_id=$1 AND customer_user_id=$2 ORDER BY created_at DESC',[clean(req.params.agentId,200),String(user.id)]);
+    res.json({success:true,pages:r.rows});
+  } catch(e) { console.error('Inbox pages:',e.message); res.status(500).json({success:false,error:'Pages could not be loaded'}); }
+});
 originalGet.call(express.application,'/conversations/:agentId/facebook',async(req,res)=>{
   try {
     const agentId=clean(req.params.agentId,200), pageId=clean(req.query.pageId,100);
