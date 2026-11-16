@@ -8,6 +8,57 @@ const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY |
 const GRAPH_VERSION = process.env.FACEBOOK_GRAPH_VERSION || 'v26.0';
 let ready = false, busy = false;
 
+const originalPost = express.application.post;
+const STOP_RE = /^(?:stop|unsubscribe|cancel|বন্ধ|বন্ধ করুন|আর মেসেজ পাঠাবেন না|আর মেসেজ চাই না|মেসেজ বন্ধ করুন|আর যোগাযোগ করবেন না)$/i;
+function isStopMessage(value) {
+  const text = String(value || '').trim().toLowerCase().replace(/[.!。！]+$/g, '').replace(/\\s+/g, ' ');
+  return STOP_RE.test(text);
+}
+async function optOutCustomer(agentId, platform, chatId) {
+  if (!agentId || !chatId) return false;
+  if (!ready) await init();
+  await pool.query('UPDATE orders SET followup_opted_out=TRUE WHERE agent_id=$1 AND chat_id=$2', [String(agentId), String(chatId)]);
+  await pool.query("UPDATE customer_followups SET status='cancelled' WHERE agent_id=$1 AND chat_id=$2 AND status='pending'", [String(agentId), String(chatId)]);
+  console.log('[FOLLOWUP OPT-OUT] customer opted out: platform=' + platform + ' agent=' + agentId);
+  return true;
+}
+// Customer STOP commands arrive through trusted platform webhooks, not a logged-in dashboard.
+// Intercept them before AI processing; all other messages continue through the existing handlers.
+express.application.post = function(path, ...handlers) {
+  const watched = path === '/telegram/webhook/:token' || path === '/webhook' || path === '/webhook/facebook';
+  if (!watched) return originalPost.call(this, path, ...handlers);
+  const wrapped = handlers.map(handler => async function(req, res, next) {
+    try {
+      if (path === '/telegram/webhook/:token') {
+        const message = req.body?.message;
+        if (isStopMessage(message?.text)) {
+          const token = String(req.params?.token || '');
+          const bot = await pool.query('SELECT agent_id FROM telegram_bots WHERE bot_token=$1 LIMIT 1', [token]);
+          await optOutCustomer(bot.rows[0]?.agent_id, 'telegram', message?.chat?.id);
+          return res.sendStatus(200);
+        }
+      } else {
+        const entries = Array.isArray(req.body?.entry) ? req.body.entry : [];
+        for (const entry of entries) {
+          const pageId = String(entry?.id || '');
+          if (!pageId || !Array.isArray(entry.messaging)) continue;
+          const stopEvents = entry.messaging.filter(event => isStopMessage(event?.message?.text));
+          if (!stopEvents.length) continue;
+          const page = await pool.query('SELECT agent_id FROM facebook_pages WHERE page_id=$1 LIMIT 1', [pageId]);
+          for (const event of stopEvents) {
+            await optOutCustomer(page.rows[0]?.agent_id, 'facebook', event?.sender?.id);
+          }
+          entry.messaging = entry.messaging.filter(event => !isStopMessage(event?.message?.text));
+        }
+      }
+    } catch (error) {
+      console.error('[FOLLOWUP OPT-OUT] webhook handling failed:', error.message);
+    }
+    return handler.call(this, req, res, next);
+  });
+  return originalPost.call(this, path, ...wrapped);
+};
+
 async function authUser(req) {
   const h=String(req.headers.authorization||'');
   if(!h.startsWith('Bearer '))return null;
@@ -89,8 +140,9 @@ express.application.post.call(express.application,'/customers/followup-optout',a
   try{
     const {agentId,chatId}=req.body||{};const platform=String(req.body?.platform||'').toLowerCase();
     if(!agentId||!chatId||!['facebook','telegram'].includes(platform))return res.status(400).json({success:false,error:'agentId, platform and chatId required'});
-    await pool.query('UPDATE orders SET followup_opted_out=TRUE WHERE agent_id=$1 AND chat_id=$2',[String(agentId),String(chatId)]);
-    await pool.query("UPDATE customer_followups SET status='cancelled' WHERE agent_id=$1 AND chat_id=$2 AND status='pending'",[String(agentId),String(chatId)]);
+    const user=await authUser(req);if(!user?.id)return res.status(401).json({success:false,error:'Login required'});
+    if(!await canManage(user.id,agentId))return res.status(403).json({success:false,error:'Agent access denied'});
+    await optOutCustomer(agentId,platform,chatId);
     res.json({success:true});
   }catch(e){res.status(500).json({success:false,error:'Opt-out failed'});}
 });

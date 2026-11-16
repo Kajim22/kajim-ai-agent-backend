@@ -91,6 +91,13 @@ express.application.get.call(express.application,'/customer/profile/:agentId/:pl
   if(!await customerProfileAuthorized(req,req.params.agentId))return res.status(403).json({success:false,error:'Customer profile access denied'});
   res.json({success:true,profile:await getProfile(req.params.agentId,req.params.platform,req.params.chatId)});
 }catch(e){res.status(500).json({success:false,error:'Customer profile load failed'});}});
-express.application.post.call(express.application,'/customer/profile/upsert',async(req,res)=>{try{const{agentId,platform,chatId,...fields}=req.body;await upsertProfile(agentId,platform,chatId,fields);res.json({success:true});}catch(e){res.json({success:false,error:e.message});}});
+express.application.post.call(express.application,'/customer/profile/upsert',async(req,res)=>{try{
+  const{agentId,platform,chatId,...fields}=req.body||{};
+  if(!agentId||!platform||!chatId)return res.status(400).json({success:false,error:'agentId, platform and chatId required'});
+  if(!['facebook','telegram'].includes(String(platform).toLowerCase()))return res.status(400).json({success:false,error:'Invalid platform'});
+  if(!await customerProfileAuthorized(req,agentId))return res.status(403).json({success:false,error:'Customer profile access denied'});
+  await upsertProfile(agentId,String(platform).toLowerCase(),chatId,fields);
+  res.json({success:true});
+}catch(e){console.error('Customer profile upsert failed:',e.message);res.status(500).json({success:false,error:'Customer profile update failed'});}});
 initCustomerMemory().catch(e=>console.error('Customer memory init error:',e.message));
 patch();
