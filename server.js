@@ -152,6 +152,7 @@ async function initDB() {
       )
     `);
     await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS page_id TEXT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_agent_platform_page_chat_created ON chat_messages(agent_id, platform, page_id, chat_id, created_at DESC)`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS facebook_conversation_modes (
         page_id TEXT NOT NULL,
