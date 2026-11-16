@@ -32,23 +32,35 @@ express.application.post = function(path, ...handlers) {
       if (path === '/telegram/webhook/:token') {
         const message = req.body?.message;
         if (isStopMessage(message?.text)) {
-          const token = String(req.params?.token || '');
-          const bot = await pool.query('SELECT agent_id FROM telegram_bots WHERE bot_token=$1 LIMIT 1', [token]);
-          await optOutCustomer(bot.rows[0]?.agent_id, 'telegram', message?.chat?.id);
+          // A STOP request must never fall through to AI, even if persistence fails.
+          try {
+            const token = String(req.params?.token || '');
+            const bot = await pool.query('SELECT agent_id FROM telegram_bots WHERE bot_token=$1 LIMIT 1', [token]);
+            await optOutCustomer(bot.rows[0]?.agent_id, 'telegram', message?.chat?.id);
+          } catch (error) {
+            console.error('[FOLLOWUP OPT-OUT] Telegram STOP persistence failed:', error.message);
+          }
           return res.sendStatus(200);
         }
       } else {
         const entries = Array.isArray(req.body?.entry) ? req.body.entry : [];
         for (const entry of entries) {
-          const pageId = String(entry?.id || '');
-          if (!pageId || !Array.isArray(entry.messaging)) continue;
-          const stopEvents = entry.messaging.filter(event => isStopMessage(event?.message?.text));
+          const events = Array.isArray(entry?.messaging) ? entry.messaging : [];
+          const stopEvents = events.filter(event => isStopMessage(event?.message?.text));
           if (!stopEvents.length) continue;
-          const page = await pool.query('SELECT agent_id FROM facebook_pages WHERE page_id=$1 LIMIT 1', [pageId]);
-          for (const event of stopEvents) {
-            await optOutCustomer(page.rows[0]?.agent_id, 'facebook', event?.sender?.id);
+
+          // Remove STOP events before database work so they can never reach AI processing.
+          entry.messaging = events.filter(event => !isStopMessage(event?.message?.text));
+          try {
+            const pageId = String(entry?.id || '');
+            if (!pageId) continue;
+            const page = await pool.query('SELECT agent_id FROM facebook_pages WHERE page_id=$1 LIMIT 1', [pageId]);
+            for (const event of stopEvents) {
+              await optOutCustomer(page.rows[0]?.agent_id, 'facebook', event?.sender?.id);
+            }
+          } catch (error) {
+            console.error('[FOLLOWUP OPT-OUT] Facebook STOP persistence failed:', error.message);
           }
-          entry.messaging = entry.messaging.filter(event => !isStopMessage(event?.message?.text));
         }
       }
     } catch (error) {
